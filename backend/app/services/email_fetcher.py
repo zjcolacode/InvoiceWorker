@@ -10,7 +10,7 @@ import imaplib
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 from typing import Optional
 
@@ -218,17 +218,68 @@ class EmailFetcherService:
         return saved
 
     @staticmethod
-    def _build_search_criteria(last_check_at: Optional[datetime]) -> str:
-        """构造IMAP搜索条件"""
-        if last_check_at is None:
-            return "UNSEEN"
-        # 使用SINCE检索last_check_at之后的邮件 (IMAP仅按日期粒度)
-        since_str = last_check_at.strftime("%d-%b-%Y")
-        return f'(SINCE "{since_str}")'
+    def _build_search_criteria(
+        last_check_at: Optional[datetime],
+        filters: Optional[dict] = None,
+    ) -> tuple[str, Optional[str]]:
+        """构造IMAP搜索条件
+
+        返回 (criteria_str, keyword_post_filter)
+        - criteria_str: IMAP UID SEARCH 所需的条件字符串
+        - keyword_post_filter: 非ASCII关键字需要后置Python过滤（IMAP CHARSET 兑现差异较大）
+        """
+        filters = filters or {}
+        parts: list[str] = []
+
+        # 日期范围
+        date_from = (filters.get("date_from") or "").strip() if filters.get("date_from") else ""
+        date_to = (filters.get("date_to") or "").strip() if filters.get("date_to") else ""
+        since_dt: Optional[datetime] = None
+        if date_from:
+            try:
+                since_dt = datetime.strptime(date_from, "%Y-%m-%d")
+            except ValueError:
+                since_dt = None
+        if since_dt is None:
+            # 保持原逻辑：未指定时以当天作为 SINCE
+            since_dt = datetime.now()
+        parts.append(f'SINCE {since_dt.strftime("%d-%b-%Y")}')
+
+        if date_to:
+            try:
+                # IMAP BEFORE 不包含当天，需+1天
+                before_dt = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+                parts.append(f'BEFORE {before_dt.strftime("%d-%b-%Y")}')
+            except ValueError:
+                pass
+
+        # 发件人
+        sender = (filters.get("sender") or "").strip()
+        if sender:
+            sender_safe = sender.replace('"', "")
+            parts.append(f'FROM "{sender_safe}"')
+
+        # 主题关键字：ASCII 走 IMAP SEARCH；非ASCII（如中文）后置过滤
+        keyword = (filters.get("keyword") or "").strip()
+        keyword_post: Optional[str] = None
+        if keyword:
+            try:
+                keyword.encode("ascii")
+                kw_safe = keyword.replace('"', "")
+                parts.append(f'SUBJECT "{kw_safe}"')
+            except UnicodeEncodeError:
+                keyword_post = keyword
+
+        criteria = "(" + " ".join(parts) + ")"
+        return criteria, keyword_post
 
     @staticmethod
-    def _do_fetch(config_id: int) -> dict:
-        """同步执行邮件拉取(在线程中调用)"""
+    def _do_fetch(config_id: int, filters: Optional[dict] = None) -> dict:
+        """同步执行邮件拉取(在线程中调用)
+
+        :param filters: 可选过滤条件 keyword/date_from/date_to/sender/has_attachment
+        """
+        filters = filters or {}
         db: Session = SessionLocal()
         result = {
             "config_id": config_id,
@@ -258,7 +309,9 @@ class EmailFetcherService:
             client.select("INBOX")
 
             # 使用UID SEARCH代替普通SEARCH，获取稳定的UID用于去重
-            criteria = EmailFetcherService._build_search_criteria(config.last_check_at)
+            criteria, keyword_post = EmailFetcherService._build_search_criteria(
+                config.last_check_at, filters
+            )
             typ, data = client.uid("search", None, criteria)
             if typ != "OK":
                 raise RuntimeError(f"邮件搜索失败: {typ}")
@@ -294,8 +347,12 @@ class EmailFetcherService:
                     subject = _decode_str(msg.get("Subject", ""))
                     sender = _decode_str(msg.get("From", ""))
                     received_at = _parse_email_date(msg.get("Date", ""))
+                    # 后置过滤：非ASCII关键字在 Python 侧判断主题包含
+                    if keyword_post and keyword_post not in (subject or ""):
+                        continue
                     attachments = EmailFetcherService._process_message(msg, target_dir)
                     uid_str = uid.decode()
+                    only_with_attachment = bool(filters.get("has_attachment", True))
                     if attachments:
                         for file_path, original_filename in attachments:
                             try:
@@ -316,6 +373,24 @@ class EmailFetcherService:
                             )
                             db.add(email_msg)
                             result["new_invoices_found"] += 1
+                    elif not only_with_attachment:
+                        # 开关关闭：保存无PDF附件的邮件，便于用户手动查看正文下载链接
+                        # 通过 subject 非空与 attachment_name 为空区分“无附件正常邮件”与“历史UID占位”
+                        placeholder_subject = subject[:500] if subject else "(无主题)"
+                        email_msg = EmailMessage(
+                            config_id=config_id,
+                            message_uid=uid_str,
+                            subject=placeholder_subject,
+                            sender=sender[:200] if sender else None,
+                            received_at=received_at,
+                            attachment_name=None,
+                            attachment_path=None,
+                            file_size=0,
+                            is_imported=False,
+                            user_id=config.user_id,
+                        )
+                        db.add(email_msg)
+                        result["new_invoices_found"] += 1
                 except Exception as item_err:
                     msg_err = f"邮件处理失败 uid={uid!r}: {item_err}"
                     logger.warning(msg_err)
@@ -359,9 +434,9 @@ class EmailFetcherService:
         return result
 
     @staticmethod
-    async def fetch_invoices(config_id: int) -> dict:
+    async def fetch_invoices(config_id: int, filters: Optional[dict] = None) -> dict:
         """异步触发邮件拉取"""
-        return await asyncio.to_thread(EmailFetcherService._do_fetch, config_id)
+        return await asyncio.to_thread(EmailFetcherService._do_fetch, config_id, filters)
 
 
 # 模块级便捷接口

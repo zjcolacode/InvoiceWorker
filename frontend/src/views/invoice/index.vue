@@ -40,8 +40,9 @@
           </el-select>
           <el-select v-model="filters.status" placeholder="状态" clearable style="width: 120px" @change="loadData">
             <el-option label="待识别" value="pending" />
+            <el-option label="识别中" value="recognizing" />
             <el-option label="已识别" value="recognized" />
-            <el-option label="识别失败" value="failed" />
+            <el-option label="识别失败" value="error" />
           </el-select>
           <el-select
             v-if="isAdmin"
@@ -197,7 +198,7 @@
         <el-descriptions-item label="价税合计">{{ currentInvoice.total ? '¥' + currentInvoice.total : '-' }}</el-descriptions-item>
         <el-descriptions-item label="分类">{{ currentInvoice.category || '-' }}</el-descriptions-item>
         <el-descriptions-item label="来源类型">{{ currentInvoice.source_type === 'pdf' ? '电子发票' : '纸质发票' }}</el-descriptions-item>
-        <el-descriptions-item label="状态">{{ currentInvoice.status === 'recognized' ? '已识别' : currentInvoice.status === 'failed' ? '识别失败' : '待识别' }}</el-descriptions-item>
+        <el-descriptions-item label="状态">{{ statusText(currentInvoice.status) }}</el-descriptions-item>
       </el-descriptions>
     </el-dialog>
   </div>
@@ -297,7 +298,7 @@ function handleSelectionChange(rows: Invoice[]) {
 // 状态类型映射
 function statusType(status: string): 'success' | 'danger' | 'warning' | 'info' {
   if (status === 'recognized') return 'success'
-  if (status === 'failed') return 'danger'
+  if (status === 'failed' || status === 'error') return 'danger'
   if (status === 'recognizing') return 'warning'
   return 'info'
 }
@@ -305,60 +306,55 @@ function statusType(status: string): 'success' | 'danger' | 'warning' | 'info' {
 // 状态文字映射
 function statusText(status: string): string {
   if (status === 'recognized') return '已识别'
-  if (status === 'failed') return '识别失败'
+  if (status === 'failed' || status === 'error') return '识别失败'
   if (status === 'recognizing') return '识别中'
   return '待识别'
 }
 
-// 识别
+// 识别（状态由后端驱动，不再在前端本地设置 recognizing）
 async function handleRecognize(id: number) {
-  // 1. 找到当前行，设置为识别中（本地状态）
   const row = invoiceList.value.find((item) => item.id === id)
-  if (row) {
-    row.status = 'recognizing'
+  if (row && row.status === 'recognizing') {
+    ElMessage.warning('该发票正在被其他流程处理，请稍后再试')
+    return
   }
 
-  // 2. 提示用户
+  // 提示用户
   ElMessage.info('正在识别中，请稍候...')
 
   try {
-    // 3. 调用识别API
     const res = await recognizeInvoice(id)
     if (res.success) {
-      // 4. 成功
       ElMessage.success('发票识别成功！')
-      await loadData()
     } else {
-      // 5. 业务失败
       ElMessage.error('识别失败：' + (res.error || '未知错误'))
-      if (row) {
-        row.status = 'failed'
-      }
     }
   } catch (error: unknown) {
-    // 6. 异常失败
     const msg = error instanceof Error ? error.message : '未知错误'
     ElMessage.error('识别失败：' + msg)
-    if (row) {
-      row.status = 'failed'
-    }
     console.error(error)
+  } finally {
+    // 无论成功失败，都以后端最新状态为准重新拉取列表
+    await loadData()
   }
 }
 
-// 批量识别（串行调用以避免AI接口并发限流）
+// 批量识别（串行调用以避免AI接口并发限流；状态完全由后端驱动）
 async function handleBatchRecognize() {
   if (!selectedIds.value.length) return
 
   // 拷贝一份当前选中ID，避免后续操作引起选中变化导致循环异常
   const ids = [...selectedIds.value]
 
-  // 先将所有选中行状态设为 识别中（前端立即反馈）
-  invoiceList.value.forEach((item) => {
-    if (ids.includes(item.id)) {
-      item.status = 'recognizing'
-    }
-  })
+  // 检查是否有选中发票处于 recognizing 状态，提醒用户后跳过该部分（后端也会跳过）
+  const recognizingRows = invoiceList.value.filter(
+    (item) => ids.includes(item.id) && item.status === 'recognizing',
+  )
+  if (recognizingRows.length > 0) {
+    ElMessage.warning(
+      `${recognizingRows.length} 张发票正在被其他流程识别中，将被跳过`,
+    )
+  }
 
   ElMessage.info(`开始批量识别 ${ids.length} 张发票...`)
 
@@ -393,24 +389,10 @@ async function handleBatchRecognize() {
       } else {
         failCount++
       }
-      // 每张处理完后立即刷新数据，让用户实时看到识别结果
+      // 每张处理完后立即刷新数据，让用户实时看到识别结果（状态完全以后端返回为准）
       await loadData()
-      // loadData 后 invoiceList 被重新赋值，需要重新标记后续未处理行的"识别中"状态
-      // 同时把当前刚处理失败的行标记为 failed（数据库可能还是 pending）
-      if (!success) {
-        const row = invoiceList.value.find((item) => item.id === id)
-        if (row) row.status = 'failed'
-      }
-      // 把后续尚未处理的行恢复为"识别中"
-      for (let j = i + 1; j < ids.length; j++) {
-        const pendingRow = invoiceList.value.find((item) => item.id === ids[j])
-        if (pendingRow && pendingRow.status !== 'recognized') {
-          pendingRow.status = 'recognizing'
-        }
-      }
     }
   } finally {
-    // 无论成功失败，恢复自动错误提示
     setSuppressErrorMessage(false)
   }
 

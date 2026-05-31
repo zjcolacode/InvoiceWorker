@@ -55,7 +55,7 @@ async function loadStats() {
 
 // ─── Workflow ─────────────────────────────────────────────────
 interface FlowOption {
-  key: 'email_fetch' | 'recognize' | 'classify' | 'organize'
+  key: 'email_fetch' | 'recognize_and_classify' | 'organize'
   label: string
   hint: string
   enabled: boolean
@@ -63,8 +63,7 @@ interface FlowOption {
 
 const flowOptions = reactive<FlowOption[]>([
   { key: 'email_fetch', label: '邮箱发票拉取', hint: 'IMAP 自动归档', enabled: true },
-  { key: 'recognize', label: 'AI 识别发票内容', hint: 'qwen-vl OCR', enabled: true },
-  { key: 'classify', label: '自动分类', hint: '关键词匹配', enabled: true },
+  { key: 'recognize_and_classify', label: 'AI 识别与分类', hint: 'qwen-vl OCR + 关键词兜底', enabled: true },
   { key: 'organize', label: '文件归档整理', hint: '按开票日期', enabled: true },
 ])
 
@@ -448,7 +447,7 @@ onBeforeUnmount(() => {
           <div>
             <div class="card-header__title">一键月度整理</div>
             <div class="card-header__caption">
-              邮箱拉取 → AI 识别 → 自动分类 → 文件归档
+              邮箱拉取 → AI 识别与分类 → 文件归档
             </div>
           </div>
           <div>
@@ -465,20 +464,20 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
-      <div class="workflow-opts">
-        <el-checkbox
-          v-for="opt in flowOptions"
-          :key="opt.key"
-          v-model="opt.enabled"
-          :disabled="isRunning"
-          class="workflow-opt"
-        >
-          <div class="workflow-opt__body">
-            <div class="workflow-opt__label">{{ opt.label }}</div>
-            <div class="workflow-opt__hint">{{ opt.hint }}</div>
-          </div>
-        </el-checkbox>
-      </div>
+      <el-row :gutter="16" class="workflow-opts">
+        <el-col :span="8" v-for="opt in flowOptions" :key="opt.key">
+          <el-checkbox
+            v-model="opt.enabled"
+            :disabled="isRunning"
+            class="workflow-opt"
+          >
+            <div class="workflow-opt__body">
+              <div class="workflow-opt__label">{{ opt.label }}</div>
+              <div class="workflow-opt__hint">{{ opt.hint }}</div>
+            </div>
+          </el-checkbox>
+        </el-col>
+      </el-row>
 
       <div v-if="workflow" class="workflow-exec">
         <div class="workflow-exec__head">
@@ -670,20 +669,29 @@ onBeforeUnmount(() => {
 }
 
 .workflow-opts {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
   margin-bottom: 12px;
+}
+
+.workflow-opts > .el-col {
+  margin-bottom: 0;
 }
 
 .workflow-opt {
   align-items: flex-start;
   margin-right: 0;
-  padding: 10px 12px;
+  padding: 14px 16px;
   border: 1px solid #ebeef5;
-  border-radius: 4px;
+  border-radius: 6px;
   background: #fafbfc;
-  height: auto;
+  height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  transition: all 0.2s;
+}
+
+.workflow-opt:hover {
+  border-color: #dcdfe6;
+  background: #f5f7fa;
 }
 
 .workflow-opt :deep(.el-checkbox__label) {
@@ -747,8 +755,14 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 768px) {
-  .workflow-opts {
-    grid-template-columns: 1fr;
+  .workflow-opts > .el-col {
+    width: 100%;
+    max-width: 100%;
+    flex: 0 0 100%;
+    margin-bottom: 12px;
+  }
+  .workflow-opts > .el-col:last-child {
+    margin-bottom: 0;
   }
 }
 </style>

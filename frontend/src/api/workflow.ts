@@ -2,8 +2,7 @@ import request from './request'
 
 export interface WorkflowStartOptions {
   email_fetch?: boolean
-  recognize?: boolean
-  classify?: boolean
+  recognize_and_classify?: boolean
   organize?: boolean
 }
 
@@ -56,8 +55,7 @@ export interface WorkflowHistoryPage {
 export function startWorkflow(options: WorkflowStartOptions = {}) {
   return request.post<unknown, WorkflowStartResponse>('/api/workflow/start', {
     email_fetch: options.email_fetch ?? true,
-    recognize: options.recognize ?? true,
-    classify: options.classify ?? true,
+    recognize_and_classify: options.recognize_and_classify ?? true,
     organize: options.organize ?? true,
   })
 }

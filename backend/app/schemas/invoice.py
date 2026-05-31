@@ -83,4 +83,6 @@ class BatchRecognitionResponse(BaseModel):
     total: int = Field(..., description="总数")
     success_count: int = Field(..., description="成功数量")
     failed_count: int = Field(..., description="失败数量")
+    skipped_count: int = Field(0, description="被跳过的数量（正在被其他流程处理或已识别）")
+    skipped_message: Optional[str] = Field(None, description="跳过原因提示")
     results: list[RecognitionResult] = Field(default_factory=list, description="各项识别结果")

@@ -98,6 +98,14 @@ export interface EmailMessageImportResult {
   requested: number
 }
 
+export interface EmailFetchFilter {
+  keyword?: string
+  date_from?: string
+  date_to?: string
+  sender?: string
+  has_attachment?: boolean
+}
+
 /* ---------- API 调用 ---------- */
 export function createEmailConfig(data: EmailConfigPayload) {
   return request.post<EmailConfigItem, EmailConfigItem>('/api/email/configs', data)
@@ -119,10 +127,14 @@ export function testConnection(data: EmailTestPayload) {
   return request.post<EmailTestResult, EmailTestResult>('/api/email/test-connection', data)
 }
 
-export function manualFetch(configId: number) {
-  return request.post<EmailFetchResult, EmailFetchResult>(`/api/email/fetch/${configId}`, null, {
-    timeout: 120000, // 邮件拉取涉及远程IMAP操作，延长到120秒
-  })
+export function manualFetch(configId: number, filter?: EmailFetchFilter) {
+  return request.post<EmailFetchResult, EmailFetchResult>(
+    `/api/email/fetch/${configId}`,
+    filter ?? {},
+    {
+      timeout: 120000, // 邮件拉取涉及远程IMAP操作，延长到120秒
+    },
+  )
 }
 
 export function getFetchLogs(params: { page?: number; pageSize?: number; configId?: number } = {}) {

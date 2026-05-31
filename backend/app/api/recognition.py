@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# 允许触发识别的源状态（占位前的状态机白名单）
+_RECOGNIZABLE_STATUSES = ("pending", "error", "failed")
+
 
 def _is_admin(user: User) -> bool:
     return (user.role or "").lower() == "admin"
@@ -45,6 +48,21 @@ def _normalize_category(value: str | None, allowed: list[str]) -> str:
         if v in allowed:
             return v
     return "其他"
+
+
+def _restore_recognizing(db: Session, ids: list[int]) -> None:
+    """异常兜底：将仍处于 recognizing 的发票恢复为 pending"""
+    if not ids:
+        return
+    try:
+        db.query(Invoice).filter(
+            Invoice.id.in_(ids),
+            Invoice.status == "recognizing",
+        ).update({"status": "pending"}, synchronize_session=False)
+        db.commit()
+    except Exception:  # pragma: no cover
+        logger.exception("恢复 recognizing -> pending 失败")
+        db.rollback()
 
 
 @router.post("/recognize/{invoice_id}", response_model=RecognitionResult)
@@ -85,13 +103,37 @@ async def recognize_single_invoice(
             detail="该发票记录没有关联的文件路径",
         )
 
+    # 状态机检查：正在被其他流程处理时直接拒绝
+    if invoice.status == "recognizing":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="该发票正在被其他流程识别中，请稍后再试",
+        )
+
+    # 占位锁：标记为 recognizing 并立即 commit，防止并发触发
+    invoice.status = "recognizing"
+    db.commit()
+    locked_id = invoice.id
+
     logger.info(f"开始识别发票 id={invoice_id}, file={invoice.file_path}")
 
     # 获取启用的分类名称列表，供模型同步推理分类
     category_names = _get_active_category_names(db)
 
-    # 调用识别服务
-    result = await recognize_invoice(invoice.file_path, categories=category_names)
+    try:
+        # 调用识别服务
+        result = await recognize_invoice(invoice.file_path, categories=category_names)
+    except Exception as exc:
+        # 识别异常，回退占位锁为 pending 后向上抛
+        logger.exception(f"发票识别异常: id={invoice_id}")
+        _restore_recognizing(db, [locked_id])
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"发票识别异常: {exc}",
+        ) from exc
+
+    # 重新获取最新的 invoice 实例（commit 后可能需要 refresh）
+    db.refresh(invoice)
 
     # 如果识别成功，更新数据库记录
     if result["success"] and result["data"]:
@@ -134,8 +176,10 @@ async def batch_recognize_invoices(
     批量识别发票
 
     - 接收 invoice_ids 列表
+    - 仅处理 pending / error / failed 状态的发票，其他状态（如 recognizing / recognized）跳过
+    - 开始前将待处理发票批量标记为 recognizing 作为占位锁
     - 逐个识别并更新数据库
-    - 返回处理结果摘要
+    - 返回处理结果摘要（含被跳过的数量）
     """
     if not request.invoice_ids:
         raise HTTPException(
@@ -143,36 +187,52 @@ async def batch_recognize_invoices(
             detail="invoice_ids不能为空",
         )
 
-    # 查询所有发票记录
-    invoice_query = db.query(Invoice).filter(Invoice.id.in_(request.invoice_ids))
-    # 用户隔离：非 admin 只会拿到自己的发票
+    requested_ids = list(dict.fromkeys(request.invoice_ids))  # 去重保序
+    requested_count = len(requested_ids)
+
+    # 查询所有请求的发票记录（先做用户隔离）
+    invoice_query = db.query(Invoice).filter(Invoice.id.in_(requested_ids))
     if not _is_admin(current_user):
         invoice_query = invoice_query.filter(Invoice.user_id == current_user.id)
-    invoices = invoice_query.all()
+    all_owned_invoices = invoice_query.all()
 
-    if not invoices:
+    if not all_owned_invoices:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="未找到任何可识别的发票记录（如识别他人的发票请联系管理员）",
         )
 
-    # 构建id到invoice的映射
-    invoice_map = {inv.id: inv for inv in invoices}
+    # 仅筛选状态在白名单内的发票（pending / error / failed）
+    processable = [
+        inv for inv in all_owned_invoices if inv.status in _RECOGNIZABLE_STATUSES
+    ]
+
+    # 计算被跳过的数量（包括状态不符或权限不足/不存在的）
+    skipped_count = requested_count - len(processable)
+
+    # 占位锁：立即将待处理发票标记为 recognizing 并 commit
+    locked_ids = [inv.id for inv in processable]
+    for inv in processable:
+        inv.status = "recognizing"
+    if locked_ids:
+        db.commit()
+
+    # 构建 id -> invoice 映射
+    invoice_map = {inv.id: inv for inv in processable}
 
     # 收集有效的文件路径
-    file_paths = []
-    valid_ids = []
-    results = []
+    file_paths: list[str] = []
+    valid_ids: list[int] = []
+    results: list[RecognitionResult] = []
 
-    for inv_id in request.invoice_ids:
+    for inv_id in requested_ids:
         inv = invoice_map.get(inv_id)
         if not inv:
-            results.append(RecognitionResult(
-                success=False,
-                data=None,
-                error=f"发票记录不存在: id={inv_id}",
-            ))
-        elif not inv.file_path:
+            # 状态不符或不存在/无权访问 —— 已计入 skipped_count，不再加入 results
+            continue
+        if not inv.file_path:
+            # 无文件路径：恢复 pending 后记为失败
+            inv.status = "pending"
             results.append(RecognitionResult(
                 success=False,
                 data=None,
@@ -182,13 +242,26 @@ async def batch_recognize_invoices(
             file_paths.append(inv.file_path)
             valid_ids.append(inv_id)
 
+    # 提交上面对无文件路径行的状态回退
+    if any(inv.status == "pending" for inv in processable if not inv.file_path):
+        db.commit()
+
     # 获取启用的分类名称列表，供模型同步推理分类
     category_names = _get_active_category_names(db)
 
     # 批量识别
     if file_paths:
         logger.info(f"开始批量识别 {len(file_paths)} 张发票")
-        recognition_results = await batch_recognize(file_paths, categories=category_names)
+        try:
+            recognition_results = await batch_recognize(file_paths, categories=category_names)
+        except Exception as exc:
+            # 整体异常：将所有已上锁的发票恢复为 pending
+            logger.exception("批量识别接口整体异常")
+            _restore_recognizing(db, valid_ids)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"批量识别异常: {exc}",
+            ) from exc
 
         for inv_id, rec_result in zip(valid_ids, recognition_results):
             inv = invoice_map[inv_id]
@@ -218,15 +291,29 @@ async def batch_recognize_invoices(
 
         db.commit()
 
+    # 兜底：以防仍有 recognizing 残留
+    _restore_recognizing(db, locked_ids)
+
     # 统计结果
     success_count = sum(1 for r in results if r.success)
     failed_count = len(results) - success_count
 
-    logger.info(f"批量识别完成: 总数={len(results)}, 成功={success_count}, 失败={failed_count}")
+    skipped_message = None
+    if skipped_count > 0:
+        skipped_message = (
+            f"{skipped_count} 张发票正在被其他流程处理或状态不可识别，已跳过"
+        )
+
+    logger.info(
+        f"批量识别完成: 请求={requested_count}, 处理={len(results)}, "
+        f"成功={success_count}, 失败={failed_count}, 跳过={skipped_count}"
+    )
 
     return BatchRecognitionResponse(
         total=len(results),
         success_count=success_count,
         failed_count=failed_count,
+        skipped_count=skipped_count,
+        skipped_message=skipped_message,
         results=results,
     )

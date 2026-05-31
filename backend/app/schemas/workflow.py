@@ -2,16 +2,24 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class WorkflowStartRequest(BaseModel):
     """启动流程请求"""
 
     email_fetch: bool = Field(True, description="是否拉取邮件")
-    recognize: bool = Field(True, description="是否执行识别")
-    classify: bool = Field(True, description="是否执行分类")
+    recognize_and_classify: bool = Field(True, description="是否执行识别与分类")
     organize: bool = Field(True, description="是否执行文件归档")
+    # 向后兼容旧字段
+    recognize: bool | None = Field(None, description="[已废弃] 是否执行识别")
+    classify: bool | None = Field(None, description="[已废弃] 是否执行分类")
+
+    @model_validator(mode="after")
+    def migrate_legacy_fields(self):
+        if self.recognize is not None or self.classify is not None:
+            self.recognize_and_classify = bool(self.recognize) or bool(self.classify)
+        return self
 
 
 class WorkflowStartResponse(BaseModel):
@@ -26,7 +34,7 @@ class WorkflowStepDetail(BaseModel):
     """流程步骤详情"""
 
     step: str  # 步骤名称(中文)
-    key: str  # 步骤键: email_fetch/recognize/classify/organize
+    key: str  # 步骤键: email_fetch/recognize_and_classify/organize
     status: str  # pending / processing / completed / failed / skipped
     result: Optional[str] = None
     error: Optional[str] = None

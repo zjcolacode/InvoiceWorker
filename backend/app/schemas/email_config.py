@@ -80,6 +80,16 @@ class EmailFetchLog(BaseModel):
         from_attributes = True
 
 
+class EmailFetchFilter(BaseModel):
+    """邮件拉取过滤条件"""
+
+    keyword: Optional[str] = Field(default=None, max_length=200, description="邮件主题关键字")
+    date_from: Optional[str] = Field(default=None, description="开始日期 YYYY-MM-DD")
+    date_to: Optional[str] = Field(default=None, description="结束日期 YYYY-MM-DD")
+    sender: Optional[str] = Field(default=None, max_length=200, description="发件人邮箱")
+    has_attachment: bool = Field(default=True, description="是否仅含附件邮件")
+
+
 class EmailFetchResult(BaseModel):
     """邮件拉取结果"""
 

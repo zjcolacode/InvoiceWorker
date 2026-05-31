@@ -1,6 +1,6 @@
 """月度整理流程API
 
-串联 邮件拉取 -> 发票识别 -> 自动分类 -> 文件归档 四个步骤。
+串联 邮件拉取 -> AI识别与分类 -> 文件归档 三个步骤。
 
 设计:
 - ProcessingTask 表持久化任务记录(开始/结束时间, 状态, 错误日志摘要, 影响的发票数)
@@ -66,12 +66,11 @@ class _WorkflowRuntime:
         self.cancelled: bool = False
         self.task: Optional[asyncio.Task] = None
 
-        # 4 个步骤(按 options 决定是否参与)
+        # 3 个步骤(按 options 决定是否参与)
         self.steps: List[Dict[str, Any]] = []
         for key, label in [
             ("email_fetch", "邮件拉取"),
-            ("recognize", "AI识别发票"),
-            ("classify", "自动分类"),
+            ("recognize_and_classify", "AI识别与分类"),
             ("organize", "文件归档"),
         ]:
             enabled = bool(getattr(options, key))
@@ -176,6 +175,24 @@ class _WorkflowRuntime:
 _STATE: Dict[int, _WorkflowRuntime] = {}
 
 
+def _restore_recognizing_to_pending(db: Session, ids: List[int]) -> None:
+    """将指定 ID 中仍处于 recognizing 状态的发票恢复为 pending
+
+    用于异常/取消场景，避免占位锁残留。
+    """
+    if not ids:
+        return
+    try:
+        db.query(Invoice).filter(
+            Invoice.id.in_(ids),
+            Invoice.status == "recognizing",
+        ).update({"status": "pending"}, synchronize_session=False)
+        db.commit()
+    except Exception:  # pragma: no cover
+        logger.exception("恢复 recognizing -> pending 失败")
+        db.rollback()
+
+
 # ---------- 步骤实现 ----------
 def _do_email_fetch_sync(user_id: Optional[int]) -> Dict[str, Any]:
     """遍历活跃邮箱配置, 依次拉取(同步, 在线程中调用)"""
@@ -226,6 +243,7 @@ async def _step_recognize(rt: _WorkflowRuntime) -> None:
     success = 0
     failed = 0
     errors: List[str] = []
+    locked_ids: List[int] = []
     try:
         pending_query = db.query(Invoice).filter(Invoice.status == "pending")
         # 用户隔离：非 admin 仅识别本人发票（user_id == rt.user_id）
@@ -233,6 +251,12 @@ async def _step_recognize(rt: _WorkflowRuntime) -> None:
             pending_query = pending_query.filter(Invoice.user_id == rt.user_id)
         pendings = pending_query.all()
         total = len(pendings)
+        # 占位锁：立即将所有待识别发票标记为 recognizing 并 commit，防止其他流程并发处理
+        locked_ids = [inv.id for inv in pendings]
+        for inv in pendings:
+            inv.status = "recognizing"
+        if locked_ids:
+            db.commit()
         for idx, inv in enumerate(pendings, 1):
             if rt.cancelled:
                 raise asyncio.CancelledError()
@@ -284,13 +308,18 @@ async def _step_recognize(rt: _WorkflowRuntime) -> None:
             error="; ".join(errors[:5])[:500] if errors else None,
         )
     except asyncio.CancelledError:
+        # 取消时将仍处于 recognizing 的占位锁恢复为 pending
+        _restore_recognizing_to_pending(db, locked_ids)
         rt.finish_step("recognize", ok=False, error="任务已取消")
         raise
     except Exception as exc:
         db.rollback()
+        _restore_recognizing_to_pending(db, locked_ids)
         logger.exception("recognize 步骤异常")
         rt.finish_step("recognize", ok=False, error=str(exc))
     finally:
+        # 兜底：流程结束前再检查一次，确保不会有残留的 recognizing 占位锁
+        _restore_recognizing_to_pending(db, locked_ids)
         db.close()
 
 
@@ -327,6 +356,110 @@ async def _step_classify(rt: _WorkflowRuntime) -> None:
     except Exception as exc:
         logger.exception("classify 步骤异常")
         rt.finish_step("classify", ok=False, error=str(exc))
+
+
+async def _step_recognize_and_classify(rt: _WorkflowRuntime) -> None:
+    """合并步骤：先AI识别，再自动分类
+
+    识别阶段占合并步骤进度的80%，分类阶段占20%。
+    """
+    rt.begin_step("recognize_and_classify")
+    db: Session = SessionLocal()
+    success = 0
+    failed = 0
+    errors: List[str] = []
+    locked_ids: List[int] = []
+    try:
+        # === 识别阶段 (占合并步骤的80%) ===
+        pending_query = db.query(Invoice).filter(Invoice.status == "pending")
+        if rt.user_id is not None and not rt.is_admin:
+            pending_query = pending_query.filter(Invoice.user_id == rt.user_id)
+        pendings = pending_query.all()
+        total = len(pendings)
+        # 占位锁：立即将所有待识别发票标记为 recognizing 并 commit，防止其他流程并发处理
+        locked_ids = [inv.id for inv in pendings]
+        for inv in pendings:
+            inv.status = "recognizing"
+        if locked_ids:
+            db.commit()
+        for idx, inv in enumerate(pendings, 1):
+            if rt.cancelled:
+                raise asyncio.CancelledError()
+            if not inv.file_path or not os.path.exists(inv.file_path):
+                inv.status = "error"
+                failed += 1
+                errors.append(f"invoice {inv.id}: 文件不存在")
+                continue
+            try:
+                res = await recognize_invoice(inv.file_path)
+                if res.get("success") and res.get("data"):
+                    data = res["data"]
+                    inv.invoice_no = data.get("invoice_no") or inv.invoice_no
+                    inv.invoice_date = data.get("invoice_date") or inv.invoice_date
+                    inv.seller_name = data.get("seller_name") or inv.seller_name
+                    inv.buyer_name = data.get("buyer_name") or inv.buyer_name
+                    if data.get("amount") is not None:
+                        inv.amount = float(data["amount"])
+                    if data.get("tax") is not None:
+                        inv.tax = float(data["tax"])
+                    if data.get("total") is not None:
+                        inv.total = float(data["total"])
+                    if data.get("items"):
+                        inv.items = str(data["items"])
+                    if data.get("category"):
+                        inv.category = str(data["category"])
+                    inv.status = "recognized"
+                    inv.recognized_at = datetime.utcnow()
+                    success += 1
+                else:
+                    inv.status = "error"
+                    failed += 1
+                    errors.append(f"invoice {inv.id}: {res.get('error')}")
+            except Exception as exc:
+                inv.status = "error"
+                failed += 1
+                errors.append(f"invoice {inv.id}: {exc}")
+            db.commit()
+            # 实时进度: 识别进度 * 0.8
+            recognize_inner = int(idx * 100 / max(total, 1))
+            merged_inner = int(recognize_inner * 0.8)
+            base = sum(1 for s in rt.steps if s["status"] == "completed") * 100
+            rt.progress = int((base + merged_inner) / max(rt.active_step_count, 1))
+
+        rt.invoice_count += success
+        recognize_text = f"待识别 {total} 张, 成功 {success}, 失败 {failed}"
+
+        # === 分类阶段 (占合并步骤的20%) ===
+        # 先推进进度到80%
+        base = sum(1 for s in rt.steps if s["status"] == "completed") * 100
+        rt.progress = int((base + 80) / max(rt.active_step_count, 1))
+
+        classify_res = await asyncio.to_thread(_do_classify_sync, rt.user_id, rt.is_admin)
+        classify_text = (
+            f"待分类 {classify_res['total']} 张, "
+            f"更新 {classify_res['updated']}, 跳过 {classify_res['skipped']}"
+        )
+
+        ok = failed == 0
+        rt.finish_step(
+            "recognize_and_classify",
+            ok=ok,
+            result=f"{recognize_text}; {classify_text}",
+            error="; ".join(errors[:5])[:500] if errors else None,
+        )
+    except asyncio.CancelledError:
+        _restore_recognizing_to_pending(db, locked_ids)
+        rt.finish_step("recognize_and_classify", ok=False, error="任务已取消")
+        raise
+    except Exception as exc:
+        db.rollback()
+        _restore_recognizing_to_pending(db, locked_ids)
+        logger.exception("recognize_and_classify 步骤异常")
+        rt.finish_step("recognize_and_classify", ok=False, error=str(exc))
+    finally:
+        # 兜底：流程结束前再检查一次，确保不会有残留的 recognizing 占位锁
+        _restore_recognizing_to_pending(db, locked_ids)
+        db.close()
 
 
 def _do_organize_sync(user_id: Optional[int], is_admin: bool) -> Dict[str, Any]:
@@ -403,7 +536,7 @@ def _persist(rt: _WorkflowRuntime) -> None:
 
 
 async def _run_workflow(rt: _WorkflowRuntime) -> None:
-    """串联执行四个步骤"""
+    """串联执行三个步骤"""
     try:
         if rt.options.email_fetch:
             await _step_email_fetch(rt)
@@ -411,14 +544,8 @@ async def _run_workflow(rt: _WorkflowRuntime) -> None:
         if rt.cancelled:
             raise asyncio.CancelledError()
 
-        if rt.options.recognize:
-            await _step_recognize(rt)
-            _persist(rt)
-        if rt.cancelled:
-            raise asyncio.CancelledError()
-
-        if rt.options.classify:
-            await _step_classify(rt)
+        if rt.options.recognize_and_classify:
+            await _step_recognize_and_classify(rt)
             _persist(rt)
         if rt.cancelled:
             raise asyncio.CancelledError()
@@ -456,7 +583,7 @@ async def start_workflow(
     current_user: User = Depends(require_role(OPERATOR_ROLES)),
 ):
     """启动月度整理流程"""
-    if not any([payload.email_fetch, payload.recognize, payload.classify, payload.organize]):
+    if not any([payload.email_fetch, payload.recognize_and_classify, payload.organize]):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="至少选择一个流程步骤",

@@ -26,12 +26,14 @@
         <el-card shadow="hover" class="metric-card">
           <div class="metric-card__label">已配置邮箱</div>
           <div class="metric-card__value">{{ configs.length }}</div>
+          <div class="metric-card__sub"></div>
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
         <el-card shadow="hover" class="metric-card">
           <div class="metric-card__label">活跃中</div>
           <div class="metric-card__value">{{ activeCount }}</div>
+          <div class="metric-card__sub"></div>
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
@@ -47,6 +49,7 @@
         <el-card shadow="hover" class="metric-card">
           <div class="metric-card__label">今日拉取邮件</div>
           <div class="metric-card__value">{{ todayHarvest }}</div>
+          <div class="metric-card__sub"></div>
         </el-card>
       </el-col>
     </el-row>
@@ -188,7 +191,7 @@
         <el-table-column
           type="selection"
           width="50"
-          :selectable="(row: EmailMessageItem) => !row.is_imported"
+          :selectable="(row: EmailMessageItem) => !row.is_imported && !!row.attachment_name"
         />
         <el-table-column
           label="邮件主题"
@@ -215,12 +218,14 @@
         <el-table-column
           label="附件名"
           prop="attachment_name"
-          min-width="200"
+          min-width="220"
           show-overflow-tooltip
         >
           <template #default="{ row }">
             <span v-if="row.attachment_name">{{ row.attachment_name }}</span>
-            <span v-else class="text-mute">—</span>
+            <el-tag v-else type="info" size="small" effect="plain">
+              无附件（正文可能含下载链接）
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="大小" width="100" align="right">
@@ -439,13 +444,59 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 拉取过滤条件对话框 -->
+    <el-dialog
+      v-model="fetchFilterVisible"
+      title="设置拉取过滤条件"
+      width="520px"
+      align-center
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <el-form :model="fetchFilter" label-position="top">
+        <el-form-item label="主题关键字">
+          <el-input
+            v-model="fetchFilter.keyword"
+            placeholder="如：发票、invoice （可选）"
+            clearable
+          />
+        </el-form-item>
+        <el-form-item label="时间范围">
+          <el-date-picker
+            v-model="fetchFilter.dateRange"
+            type="daterange"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+            :clearable="true"
+          />
+        </el-form-item>
+        <el-form-item label="发件人邮箱">
+          <el-input
+            v-model="fetchFilter.sender"
+            placeholder="如：supplier@qq.com（可选）"
+            clearable
+          />
+        </el-form-item>
+        <el-form-item label="仅拉取含附件的邮件">
+          <el-switch v-model="fetchFilter.hasAttachment" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="fetchFilterVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmFetch">确认拉取</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElLoading, ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import {
   createEmailConfig,
@@ -459,6 +510,7 @@ import {
   testConnection,
   updateEmailConfig,
   type EmailConfigItem,
+  type EmailFetchFilter,
   type EmailFetchLogItem,
   type EmailMessageItem,
   type EmailMessagePage,
@@ -494,6 +546,35 @@ const formRef = ref<FormInstance>()
 const saving = ref(false)
 const probing = ref(false)
 const probeResult = ref<EmailTestResult | null>(null)
+
+/* 拉取过滤条件对话框状态 */
+const fetchFilterVisible = ref(false)
+const pendingFetchConfig = ref<EmailConfigItem | null>(null)
+
+function defaultDateRange(): [string, string] {
+  const today = new Date()
+  const start = new Date()
+  start.setDate(today.getDate() - 6) // 近 7 天（含今天）
+  const fmt = (d: Date) => {
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
+  }
+  return [fmt(start), fmt(today)]
+}
+
+const fetchFilter = reactive<{
+  keyword: string
+  dateRange: [string, string] | null
+  sender: string
+  hasAttachment: boolean
+}>({
+  keyword: '',
+  dateRange: defaultDateRange(),
+  sender: '',
+  hasAttachment: true,
+})
 
 const form = reactive({
   email_address: '',
@@ -655,7 +736,9 @@ function onMessagePageChange(p: number) {
 }
 
 function handleMessageSelect(rows: EmailMessageItem[]) {
-  selectedMessageIds.value = rows.filter((r) => !r.is_imported).map((r) => r.id)
+  selectedMessageIds.value = rows
+    .filter((r) => !r.is_imported && !!r.attachment_name)
+    .map((r) => r.id)
 }
 
 async function handleImport() {
@@ -833,9 +916,48 @@ async function handleDelete(row: EmailConfigItem) {
 }
 
 async function handleFetch(row: EmailConfigItem) {
-  fetchingId.value = row.id
+  // 打开过滤条件对话框。实际拉取在 confirmFetch 中执行。
+  pendingFetchConfig.value = row
+  fetchFilter.keyword = ''
+  fetchFilter.dateRange = defaultDateRange()
+  fetchFilter.sender = ''
+  fetchFilter.hasAttachment = true
+  fetchFilterVisible.value = true
+}
+
+async function confirmFetch() {
+  const target = pendingFetchConfig.value
+  if (!target) {
+    fetchFilterVisible.value = false
+    return
+  }
+
+  // 构造请求体
+  const payload: EmailFetchFilter = {
+    has_attachment: fetchFilter.hasAttachment,
+  }
+  const kw = fetchFilter.keyword.trim()
+  if (kw) payload.keyword = kw
+  const sender = fetchFilter.sender.trim()
+  if (sender) payload.sender = sender
+  if (fetchFilter.dateRange && fetchFilter.dateRange.length === 2) {
+    const [from, to] = fetchFilter.dateRange
+    if (from) payload.date_from = from
+    if (to) payload.date_to = to
+  }
+
+  // 关闭过滤对话框后开启全屏模态 Loading
+  fetchFilterVisible.value = false
+  fetchingId.value = target.id
+  const loadingInstance = ElLoading.service({
+    fullscreen: true,
+    lock: true,
+    text: '正在拉取邮件，请稍候……',
+    background: 'rgba(0, 0, 0, 0.6)',
+  })
+
   try {
-    const res = (await manualFetch(row.id)) as unknown as {
+    const res = (await manualFetch(target.id, payload)) as unknown as {
       total_emails_checked: number
       new_invoices_found: number
       status: string
@@ -853,9 +975,11 @@ async function handleFetch(row: EmailConfigItem) {
     selectedMessageIds.value = []
     await Promise.all([loadConfigs(), loadLogs(), loadMessages()])
   } catch {
-    /* swallow */
+    /* 错误已由拦截器提示 */
   } finally {
+    loadingInstance.close()
     fetchingId.value = null
+    pendingFetchConfig.value = null
   }
 }
 
@@ -883,34 +1007,55 @@ onMounted(() => {
   margin: 0 2px;
 }
 
+.metrics-row {
+  align-items: stretch;
+}
+
 .metrics-row > .el-col {
+  display: flex;
   margin-bottom: 16px;
 }
 
 .metric-card {
-  border-radius: 4px;
+  width: 100%;
+  height: 100%;
+  min-height: 120px;
+  border-radius: 8px;
+  border: 1px solid #ebeef5;
+  background-color: #fff;
+}
+
+.metric-card :deep(.el-card__body) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: 100%;
+  box-sizing: border-box;
 }
 
 .metric-card__label {
   font-size: 13px;
   color: #909399;
   margin-bottom: 8px;
+  line-height: 1.4;
 }
 
 .metric-card__value {
-  font-size: 24px;
+  font-size: 28px;
   font-weight: 600;
   color: #303133;
+  line-height: 1.2;
 }
 
 .metric-card__value--small {
-  font-size: 18px;
+  font-size: 20px;
 }
 
 .metric-card__sub {
-  margin-top: 4px;
+  min-height: 18px;
   font-size: 12px;
   color: #909399;
+  line-height: 1.5;
 }
 
 .section-card {

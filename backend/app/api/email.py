@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -20,6 +21,7 @@ from app.schemas.email_config import (
     EmailConfigCreate,
     EmailConfigResponse,
     EmailConfigUpdate,
+    EmailFetchFilter,
     EmailFetchLog as EmailFetchLogSchema,
     EmailFetchLogPage,
     EmailFetchResult,
@@ -154,20 +156,25 @@ async def test_connection(
 @router.post("/fetch/{config_id}", response_model=EmailFetchResult)
 async def manual_fetch(
     config_id: int,
+    payload: Optional[EmailFetchFilter] = Body(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(["admin", "operator"])),
 ):
-    """手动触发邮件拉取(admin/operator)"""
+    """手动触发邮件拉取(admin/operator)
+
+    可选过滤条件：keyword / date_from / date_to / sender / has_attachment
+    """
     config = db.query(EmailConfig).filter(EmailConfig.id == config_id).first()
     if not config:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"邮箱配置不存在: id={config_id}",
         )
+    filters = payload.model_dump() if payload else {}
     logger.info(
-        f"手动触发邮箱拉取 id={config_id} by {current_user.username}"
+        f"手动触发邮箱拉取 id={config_id} by {current_user.username} filters={filters}"
     )
-    result = await EmailFetcherService.fetch_invoices(config_id)
+    result = await EmailFetcherService.fetch_invoices(config_id, filters)
     return EmailFetchResult(**result)
 
 
@@ -230,8 +237,10 @@ async def list_email_messages(
     - 其他角色仅可查看自己邮箱拉取的邮件
     """
     query = db.query(EmailMessage)
-    # 排除无附件的历史UID标记
-    query = query.filter(EmailMessage.attachment_name.isnot(None))
+    # 排除无主题的历史UID占位记录，保留有主题的正常邮件（含“无附件正文邮件”）
+    query = query.filter(EmailMessage.subject.isnot(None))
+    # 双保险：排除早期历史UID占位标记，避免迁移未清理时脱漏
+    query = query.filter(EmailMessage.subject != '[历史邮件-旧系统已处理]')
     if (current_user.role or "").lower() != "admin":
         query = query.filter(EmailMessage.user_id == current_user.id)
     if is_imported is not None:
@@ -239,8 +248,11 @@ async def list_email_messages(
     if config_id is not None:
         query = query.filter(EmailMessage.config_id == config_id)
     total = query.count()
+    # 按 received_at 倒序（最新在前），received_at 为空时用 created_at 兑底
     items = (
-        query.order_by(EmailMessage.created_at.desc())
+        query.order_by(
+            desc(func.coalesce(EmailMessage.received_at, EmailMessage.created_at))
+        )
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()

@@ -86,11 +86,61 @@ def _ensure_email_messages_uid_column() -> None:
         logger.warning(f"检查/补充 email_messages.message_uid 列失败（可忽略）: {e}")
 
 
+def _deduplicate_email_messages() -> None:
+    """清理 email_messages 表中的重复数据
+
+    1. 删除所有 message_uid=NULL 的旧记录（最早一次批量下载残留，无去重价值）
+    2. 对剩余记录按 (config_id, message_uid, attachment_name) 去重，保留 id 最大的一条
+    """
+    from app.models.email_message import EmailMessage
+
+    db = SessionLocal()
+    try:
+        # 1. 删除所有 message_uid=NULL 的旧记录
+        deleted_null = db.query(EmailMessage).filter(
+            EmailMessage.message_uid.is_(None)
+        ).delete(synchronize_session=False)
+        if deleted_null:
+            logger.info(f"删除 {deleted_null} 条无UID的旧记录")
+
+        # 2. 对剩余记录按 (config_id, message_uid, attachment_name) 去重，保留 id 最大的
+        keep_ids_sql = text('''
+            SELECT MAX(id) as keep_id
+            FROM email_messages
+            WHERE message_uid IS NOT NULL
+            GROUP BY config_id, message_uid, COALESCE(attachment_name, '')
+        ''')
+        keep_ids = {row[0] for row in db.execute(keep_ids_sql).fetchall()}
+
+        all_ids_sql = text('''
+            SELECT id FROM email_messages WHERE message_uid IS NOT NULL
+        ''')
+        all_ids = {row[0] for row in db.execute(all_ids_sql).fetchall()}
+
+        delete_ids = all_ids - keep_ids
+        if delete_ids:
+            db.query(EmailMessage).filter(
+                EmailMessage.id.in_(list(delete_ids))
+            ).delete(synchronize_session=False)
+            logger.info(f"去重删除 {len(delete_ids)} 条重复记录")
+
+        db.commit()
+
+        remaining = db.query(EmailMessage).count()
+        logger.info(f"邮件去重清理完成，剩余 {remaining} 条记录")
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"邮件去重清理失败: {e}")
+    finally:
+        db.close()
+
+
 def init_db() -> None:
     """初始化数据库，创建默认admin用户并进行必要的表结构迁移"""
     _ensure_invoice_file_hash_column()
     _ensure_user_menu_permissions_column()
     _ensure_email_messages_uid_column()
+    _deduplicate_email_messages()
     db: Session = SessionLocal()
     try:
         # 检查是否已有admin用户
