@@ -1,53 +1,35 @@
 /* ───────────────────────────────────────────────────────────────
-   InvoiceWorker · Editorial Ledger Design System
-   Swiss-Japanese accounting-journal sensibility.
-   Cream paper · ink · single vermilion accent.
+   InvoiceWorker · Flat Admin Style
+   Standard SaaS dashboard look with Element Plus default theme.
    ─────────────────────────────────────────────────────────────── */
 
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&display=swap');
-
 :root {
-  /* Palette — paper, ink, stamp */
-  --paper:        #F5F1E8;
-  --paper-2:      #ECE6D6;
-  --paper-3:      #E2DAC4;
-  --ink:          #0E0E0E;
-  --ink-2:        #1F1B16;
-  --mute:         #6B6157;
-  --mute-2:       #978B7C;
-  --rule:         #0E0E0E;
-  --rule-soft:    rgba(14, 14, 14, 0.14);
-  --rule-faint:   rgba(14, 14, 14, 0.07);
+  --app-bg:        #f5f7fa;
+  --app-text:      #303133;
+  --app-text-mute: #606266;
+  --app-border:    #e4e7ed;
+  --app-card-bg:   #ffffff;
+  --app-primary:   #409EFF;
+  --app-shadow:    0 2px 12px rgba(0, 0, 0, 0.08);
 
-  /* Signature ink — vermilion (hanko) */
-  --stamp:        #B8410E;
-  --stamp-2:      #8E2F08;
-  --stamp-soft:   rgba(184, 65, 14, 0.12);
-  --gold:         #C99A4B;
-
-  /* Type */
-  --serif:        'Fraunces', 'Songti SC', 'Source Han Serif SC', Georgia, serif;
-  --sans:         'Geist', -apple-system, 'Helvetica Neue', 'PingFang SC', sans-serif;
-  --mono:         'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-
-  /* Geometry */
-  --hair:         1px solid var(--rule);
-  --hair-soft:    1px solid var(--rule-soft);
-
-  color-scheme: light;
-  font: 15px/1.55 var(--sans);
-  color: var(--ink);
-  background: var(--paper);
-  letter-spacing: 0.005em;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--app-text);
+  background: var(--app-bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
-  font-feature-settings: 'ss01', 'ss02', 'cv11';
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
-html, body, #app {
+html,
+body,
+#app {
   margin: 0;
   padding: 0;
   width: 100%;
@@ -55,11 +37,10 @@ html, body, #app {
 }
 
 body {
-  background: var(--paper);
-  color: var(--ink);
+  background: var(--app-bg);
+  color: var(--app-text);
 }
 
-/* override default-template app sizing  */
 #app {
   width: 100%;
   max-width: none;
@@ -68,209 +49,33 @@ body {
   border: 0;
   display: block;
   min-height: 100vh;
-  flex-direction: initial;
 }
 
-a { color: inherit; text-decoration: none; }
-button { font-family: inherit; }
-
-::selection {
-  background: var(--ink);
-  color: var(--paper);
+a {
+  color: var(--app-primary);
+  text-decoration: none;
 }
 
-/* Editorial primitives  ───────────────────────────────────────── */
-
-.eyebrow {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--mute);
-  font-weight: 500;
+a:hover {
+  opacity: 0.85;
 }
 
-.serial {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  color: var(--mute);
-  font-variant-numeric: tabular-nums;
-}
-
-.display {
-  font-family: var(--serif);
-  font-weight: 400;
-  font-style: italic;
-  letter-spacing: -0.02em;
-  color: var(--ink);
-}
-
-.rule { height: 1px; background: var(--rule); }
-.rule-soft { height: 1px; background: var(--rule-soft); }
-
-/* Stamp mark — a re-usable vermilion seal element */
-.stamp {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px; height: 44px;
-  border: 1.5px solid var(--stamp);
-  color: var(--stamp);
-  font-family: var(--serif);
-  font-size: 18px;
-  border-radius: 2px;
-  transform: rotate(-4deg);
-  background: rgba(184, 65, 14, 0.04);
-  letter-spacing: -0.02em;
-}
-
-/* Element Plus skin — make it speak our language ────────────── */
-
-.el-button {
-  border-radius: 0 !important;
-  font-family: var(--mono) !important;
-  font-size: 12px !important;
-  letter-spacing: 0.14em !important;
-  text-transform: uppercase !important;
-  font-weight: 500 !important;
-  height: 44px !important;
-  padding: 0 22px !important;
-  transition: all 0.2s ease !important;
-}
-.el-button--primary {
-  background: var(--ink) !important;
-  border-color: var(--ink) !important;
-  color: var(--paper) !important;
-}
-.el-button--primary:hover,
-.el-button--primary:focus {
-  background: var(--stamp) !important;
-  border-color: var(--stamp) !important;
-  color: var(--paper) !important;
-}
-.el-button--default {
-  background: transparent !important;
-  border-color: var(--ink) !important;
-  color: var(--ink) !important;
-}
-.el-button--default:hover {
-  background: var(--ink) !important;
-  color: var(--paper) !important;
-}
-
-/* Inputs — minimal, hairline-bottom field */
-.el-input__wrapper {
-  background: transparent !important;
-  box-shadow: none !important;
-  border: 0 !important;
-  border-bottom: 1px solid var(--rule) !important;
-  border-radius: 0 !important;
-  padding: 8px 0 !important;
-  transition: border-color 0.2s ease !important;
-}
-.el-input__wrapper:hover,
-.el-input__wrapper.is-focus {
-  border-bottom-color: var(--stamp) !important;
-  box-shadow: none !important;
-}
-.el-input__inner {
-  font-family: var(--sans) !important;
-  font-size: 15px !important;
-  color: var(--ink) !important;
-  height: 32px !important;
-}
-.el-input__inner::placeholder {
-  color: var(--mute-2) !important;
-  font-style: italic;
-}
-
-/* Form labels — monospace eyebrow */
-.el-form-item__label {
-  font-family: var(--mono) !important;
-  font-size: 10px !important;
-  letter-spacing: 0.18em !important;
-  text-transform: uppercase !important;
-  color: var(--mute) !important;
-  font-weight: 500 !important;
-  line-height: 1.4 !important;
-  padding-bottom: 2px !important;
-}
-.el-form-item__error {
-  font-family: var(--mono) !important;
-  font-size: 11px !important;
-  color: var(--stamp) !important;
-  letter-spacing: 0.02em !important;
-  padding-top: 6px !important;
-}
-
-/* Menu — sidebar nav */
-.el-menu {
-  border-right: 0 !important;
-  background: transparent !important;
-}
-.el-menu-item {
-  font-family: var(--mono) !important;
-  font-size: 12px !important;
-  letter-spacing: 0.14em !important;
-  text-transform: uppercase !important;
-  color: var(--ink) !important;
-  background: transparent !important;
-  height: 48px !important;
-  line-height: 48px !important;
-  padding-left: 28px !important;
-  position: relative;
-  border-radius: 0 !important;
-  transition: color 0.2s ease, padding-left 0.2s ease !important;
-}
-.el-menu-item:hover {
-  background: transparent !important;
-  color: var(--stamp) !important;
-  padding-left: 32px !important;
-}
-.el-menu-item.is-active {
-  color: var(--ink) !important;
-  background: var(--paper-3) !important;
-}
-.el-menu-item.is-active::before {
-  content: '';
-  position: absolute;
-  left: 0; top: 12px; bottom: 12px;
-  width: 2px;
-  background: var(--stamp);
-}
-.el-menu--collapse .el-menu-item { padding-left: 20px !important; }
-.el-menu--collapse .el-menu-item.is-active::before { left: 0; }
-
-/* Containers */
-.el-container, .el-aside, .el-main, .el-header { background: transparent !important; }
-.el-main { padding: 0 !important; }
-
-/* Dropdowns / popovers — subtle paper feel */
-.el-popper.is-light {
-  background: var(--paper-2) !important;
-  border: 1px solid var(--rule) !important;
-  border-radius: 0 !important;
-  box-shadow: 0 8px 24px rgba(14, 14, 14, 0.08) !important;
-}
-.el-dropdown-menu {
-  background: var(--paper-2) !important;
-  padding: 6px 0 !important;
-}
-.el-dropdown-menu__item {
-  font-family: var(--mono) !important;
-  font-size: 11px !important;
-  letter-spacing: 0.14em !important;
-  text-transform: uppercase !important;
-  color: var(--ink) !important;
-}
-.el-dropdown-menu__item:hover {
-  background: var(--paper-3) !important;
-  color: var(--stamp) !important;
+button {
+  font-family: inherit;
 }
 
 /* Scrollbar — minimal */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--rule-soft); border-radius: 0; }
-::-webkit-scrollbar-thumb:hover { background: var(--rule); }
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}

@@ -22,6 +22,7 @@ class Invoice(Base):
     source_type = Column(String(20), nullable=False, default="pdf")  # pdf / paper
     file_path = Column(String(500), nullable=True)
     original_filename = Column(String(255), nullable=True)
+    file_hash = Column(String(64), nullable=True, index=True)  # SHA256哈希，用于去重
     recognized_at = Column(DateTime(timezone=True), nullable=True)
     status = Column(String(20), default="pending", nullable=False)  # pending, recognized, verified, error
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)

@@ -19,6 +19,8 @@ class Settings(BaseSettings):
 
     # DashScope API配置
     DASHSCOPE_API_KEY: Optional[str] = None
+    DASHSCOPE_BASE_URL: str = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    VISION_MODEL: str = "qwen3.6-plus"
 
     # 文件存储路径
     PDF_STORAGE_PATH: str = "./storage/pdf_invoices"

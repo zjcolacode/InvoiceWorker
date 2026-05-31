@@ -71,6 +71,40 @@ def _resolve_conflict(target_dir: Path, filename: str) -> Path:
         i += 1
 
 
+def save_upload_bytes(content: bytes, filename: str, source_type: str) -> str:
+    """
+    将已读取的字节内容保存到对应目录。
+
+    :param content: 文件二进制内容
+    :param filename: 原始文件名(用于推断扩展名与目标命名)
+    :param source_type: pdf / paper
+    :return: 相对存储路径
+    """
+    if not filename:
+        raise ValueError("文件名为空")
+
+    _validate_extension(filename, source_type)
+    safe_name = _safe_filename(filename)
+
+    base_dir = _get_base_dir(source_type)
+    date_folder = datetime.now().strftime("%Y-%m-%d")
+    target_dir = base_dir / date_folder
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    target_path = _resolve_conflict(target_dir, safe_name)
+
+    with target_path.open("wb") as f:
+        f.write(content)
+
+    logger.info(f"文件保存成功: {target_path}")
+
+    try:
+        rel = target_path.relative_to(Path.cwd())
+        return str(rel).replace("\\", "/")
+    except ValueError:
+        return str(target_path).replace("\\", "/")
+
+
 async def save_upload_file(file: UploadFile, source_type: str) -> str:
     """
     保存上传文件到对应目录。

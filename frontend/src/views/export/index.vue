@@ -5,7 +5,6 @@
       <template #header>
         <div class="card-header">
           <div class="title-block">
-            <span class="serial">§ 04</span>
             <h3 class="title">数据导出</h3>
           </div>
           <span class="caption">按月、按分类、按明细 — 一键生成 Excel，离线交付。</span>
@@ -394,10 +393,14 @@ onMounted(() => {
 
 <style scoped>
 .export-page {
-  padding: 20px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.config-card,
+.history-card {
+  border-radius: 4px;
 }
 
 .card-header {
@@ -416,13 +419,6 @@ onMounted(() => {
   display: flex;
   align-items: baseline;
   gap: 10px;
-}
-
-.serial {
-  font-family: 'JetBrains Mono', Menlo, monospace;
-  font-size: 12px;
-  letter-spacing: 1px;
-  color: var(--el-color-primary);
 }
 
 .title {

@@ -3,11 +3,12 @@
 
 提供发票上传、列表查询、详情、删除、统计等接口。
 """
+import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -15,11 +16,11 @@ from app.core.database import get_db
 from app.core.security import require_role
 from app.models.invoice import Invoice
 from app.models.user import User
-from app.schemas.invoice import InvoiceResponse
+from app.schemas.invoice import InvoiceResponse, InvoiceUploadResult, SkippedFile
 from app.services.file_organizer import (
     ALLOWED_EXTENSIONS,
     delete_invoice_file,
-    save_upload_file,
+    save_upload_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ ALLOWED_ROLES = ["admin", "user", "operator", "manager"]
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
 
-@router.post("/upload", response_model=List[InvoiceResponse])
+@router.post("/upload", response_model=InvoiceUploadResult)
 async def upload_invoices(
     files: List[UploadFile] = File(..., description="发票文件,支持多文件"),
     source_type: str = Form(..., description="来源类型: pdf / paper"),
@@ -47,6 +48,7 @@ async def upload_invoices(
     - 单文件最大 20MB
     - 按来源类型存储到 pdf_invoices 或 paper_invoices 目录,并按当前日期分文件夹
     - 创建 status=pending 的 Invoice 记录
+    - 去重策略：优先按 SHA256 内容哈希查重，其次按原始文件名查重
     """
     if source_type not in ("pdf", "paper"):
         raise HTTPException(
@@ -60,6 +62,10 @@ async def upload_invoices(
         )
 
     created: List[Invoice] = []
+    skipped: List[SkippedFile] = []
+    # 本批已准备入库的 hash——避免同一批重复文件被重复创建
+    batch_hashes: set[str] = set()
+    batch_names: set[str] = set()
 
     for file in files:
         # 校验扩展名
@@ -83,22 +89,77 @@ async def upload_invoices(
                 detail=f"纸质发票仅支持图片: {filename}",
             )
 
-        # 文件大小校验 (尽力而为, 通过 spooled file 大小)
+        # 读取文件内容（用于哈希与后续保存）
         try:
-            file.file.seek(0, 2)
-            size = file.file.tell()
-            file.file.seek(0)
-        except Exception:
-            size = 0
-        if size and size > MAX_FILE_SIZE:
+            content = await file.read()
+        except Exception as e:
+            logger.exception(f"读取文件失败: {filename}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"读取文件失败: {e}",
+            )
+        finally:
+            try:
+                await file.close()
+            except Exception:
+                pass
+
+        size = len(content)
+        if size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"文件超过 20MB 限制: {filename}",
             )
 
+        # 计算 SHA256 哈希
+        file_hash = hashlib.sha256(content).hexdigest()
+
+        # 1) 同批重复
+        if file_hash in batch_hashes:
+            skipped.append(SkippedFile(
+                filename=filename,
+                reason="本次上传中已包含相同内容的文件",
+                existing_id=None,
+            ))
+            continue
+
+        # 2) 数据库中已存在相同内容哈希
+        existing = (
+            db.query(Invoice).filter(Invoice.file_hash == file_hash).first()
+        )
+        if existing:
+            skipped.append(SkippedFile(
+                filename=filename,
+                reason="文件已存在（与已有发票重复）",
+                existing_id=existing.id,
+            ))
+            continue
+
+        # 3) 文件名重复（辅助提示）
+        if filename and filename in batch_names:
+            skipped.append(SkippedFile(
+                filename=filename,
+                reason="本次上传中已包含同名文件",
+                existing_id=None,
+            ))
+            continue
+        if filename:
+            existing_by_name = (
+                db.query(Invoice)
+                .filter(Invoice.original_filename == filename)
+                .first()
+            )
+            if existing_by_name:
+                skipped.append(SkippedFile(
+                    filename=filename,
+                    reason="同名文件已上传过",
+                    existing_id=existing_by_name.id,
+                ))
+                continue
+
         # 保存文件
         try:
-            rel_path = await save_upload_file(file, source_type)
+            rel_path = save_upload_bytes(content, filename, source_type)
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -116,18 +177,33 @@ async def upload_invoices(
             source_type=source_type,
             file_path=rel_path,
             original_filename=filename,
+            file_hash=file_hash,
             status="pending",
             user_id=current_user.id,
         )
         db.add(invoice)
         created.append(invoice)
+        batch_hashes.add(file_hash)
+        if filename:
+            batch_names.add(filename)
 
     db.commit()
     for inv in created:
         db.refresh(inv)
 
-    logger.info(f"用户 {current_user.username} 上传 {len(created)} 张发票")
-    return created
+    logger.info(
+        f"用户 {current_user.username} 上传完成: 成功 {len(created)} / 跳过 {len(skipped)}"
+    )
+
+    message = f"成功上传 {len(created)} 个文件"
+    if skipped:
+        message += f"，跳过 {len(skipped)} 个重复文件"
+
+    return InvoiceUploadResult(
+        uploaded=[InvoiceResponse.model_validate(inv) for inv in created],
+        skipped=skipped,
+        message=message,
+    )
 
 
 @router.get("/", response_model=dict)
@@ -239,6 +315,32 @@ async def get_invoice(
             detail=f"发票不存在: id={invoice_id}",
         )
     return invoice
+
+
+@router.patch("/{invoice_id}/category", response_model=dict)
+async def update_invoice_category(
+    invoice_id: int,
+    category: Optional[str] = Body(None, embed=True, description="发票分类，传空字符串或 null 表示清除"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(ALLOWED_ROLES)),
+):
+    """更新单张发票的分类"""
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"发票不存在: id={invoice_id}",
+        )
+
+    new_category = (category or "").strip() or None
+    invoice.category = new_category
+    db.commit()
+    db.refresh(invoice)
+
+    logger.info(
+        f"用户 {current_user.username} 更新发票 id={invoice_id} 分类为: {new_category}"
+    )
+    return {"success": True, "id": invoice_id, "category": new_category}
 
 
 @router.delete("/{invoice_id}", response_model=dict)

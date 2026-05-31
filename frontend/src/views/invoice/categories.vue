@@ -353,7 +353,6 @@ loadList()
 
 <style scoped>
 .categories-page {
-  padding: 20px;
   display: flex;
   flex-direction: column;
   gap: 16px;

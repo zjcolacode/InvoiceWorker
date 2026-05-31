@@ -1,220 +1,211 @@
 <template>
-  <div class="ledger">
-    <!-- 装饰性背景 -->
-    <div class="ledger__grain" aria-hidden="true"></div>
-    <div class="ledger__rule" aria-hidden="true"></div>
-
-    <!-- 顶部"控制台"标题区 -->
-    <header class="console">
-      <div class="console__overline">
-        <span class="dot dot--live"></span>
-        <span>SYSTEM · 06</span>
-        <span class="sep">/</span>
-        <span>INBOX_INTAKE</span>
-        <span class="sep">/</span>
-        <span class="mono">{{ nowStamp }}</span>
-      </div>
-      <h1 class="console__title">
-        <span class="word">邮箱</span>
-        <span class="word italic">接入</span>
-        <span class="word ampersand">&amp;</span>
-        <span class="word">轮询</span>
-      </h1>
-      <p class="console__subtitle">
-        Configure inbound IMAP mailboxes &mdash; schedule fetch &mdash; harvest invoice attachments.
-      </p>
-
-      <!-- 统计 ribbon -->
-      <div class="metrics">
-        <div class="metric">
-          <span class="metric__label">CONFIGURED</span>
-          <span class="metric__value">{{ pad2(configs.length) }}</span>
-          <span class="metric__suffix">mailbox{{ configs.length === 1 ? '' : 'es' }}</span>
-        </div>
-        <div class="metric">
-          <span class="metric__label">ACTIVE</span>
-          <span class="metric__value">{{ pad2(activeCount) }}</span>
-          <span class="metric__suffix">polling</span>
-        </div>
-        <div class="metric">
-          <span class="metric__label">LAST POLL</span>
-          <span class="metric__value mono small">{{ lastPollLabel }}</span>
-          <span class="metric__suffix">{{ lastPollRelative }}</span>
-        </div>
-        <div class="metric">
-          <span class="metric__label">TODAY HARVEST</span>
-          <span class="metric__value">{{ todayHarvest }}</span>
-          <span class="metric__suffix">new invoices</span>
-        </div>
-      </div>
-    </header>
-
+  <div class="email-config-page">
     <!-- 授权码提示 -->
     <el-alert
-      class="hint"
       type="info"
       :closable="false"
       show-icon
+      class="hint-alert"
     >
       <template #title>
-        <span class="hint__title">授权码 ≠ 登录密码</span>
+        <span style="font-weight: 600">授权码 ≠ 登录密码</span>
       </template>
       <template #default>
-        <p class="hint__body">
-          QQ / 163 / 网易企业邮 等服务需要在邮箱网页端开启 IMAP 服务并申请<em>"授权码"</em>，
-          再填写到下方密码字段。常见服务器:
+        <p style="margin: 4px 0 0; font-size: 13px; line-height: 1.55">
+          QQ / 163 / 网易企业邮 等服务需要在邮箱网页端开启 IMAP 服务并申请<strong>"授权码"</strong>，
+          再填写到下方密码字段。常见服务器：
           <code>imap.qq.com</code> / <code>imap.163.com</code> /
           <code>imap.exmail.qq.com</code> / <code>outlook.office365.com</code>。
         </p>
       </template>
     </el-alert>
 
-    <!-- 配置列表卡片 -->
-    <section class="card">
-      <div class="card__head">
-        <div class="card__head-left">
-          <span class="filing">FILE NO. 06-A</span>
-          <h2 class="card__title">已登记的邮箱</h2>
+    <!-- 统计概览 -->
+    <el-row :gutter="16" class="metrics-row">
+      <el-col :xs="12" :sm="6">
+        <el-card shadow="hover" class="metric-card">
+          <div class="metric-card__label">已配置邮箱</div>
+          <div class="metric-card__value">{{ configs.length }}</div>
+        </el-card>
+      </el-col>
+      <el-col :xs="12" :sm="6">
+        <el-card shadow="hover" class="metric-card">
+          <div class="metric-card__label">活跃中</div>
+          <div class="metric-card__value">{{ activeCount }}</div>
+        </el-card>
+      </el-col>
+      <el-col :xs="12" :sm="6">
+        <el-card shadow="hover" class="metric-card">
+          <div class="metric-card__label">最近一次拉取</div>
+          <div class="metric-card__value metric-card__value--small">
+            {{ lastPollLabel }}
+          </div>
+          <div class="metric-card__sub">{{ lastPollRelative }}</div>
+        </el-card>
+      </el-col>
+      <el-col :xs="12" :sm="6">
+        <el-card shadow="hover" class="metric-card">
+          <div class="metric-card__label">今日新增发票</div>
+          <div class="metric-card__value">{{ todayHarvest }}</div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <!-- 配置列表 -->
+    <el-card shadow="never" class="section-card">
+      <template #header>
+        <div class="card-header">
+          <span class="card-header__title">已登记的邮箱</span>
+          <div>
+            <el-button :icon="Refresh" @click="loadConfigs" :loading="loading">
+              刷新
+            </el-button>
+            <el-button type="primary" :icon="Plus" @click="openCreate">
+              登记新邮箱
+            </el-button>
+          </div>
         </div>
-        <div class="card__head-right">
-          <button class="btn-ghost" @click="loadConfigs" :disabled="loading">
-            <span class="btn-ghost__icon">↻</span>
-            <span>刷新</span>
-          </button>
-          <button class="btn-solid" @click="openCreate">
-            <span class="btn-solid__plus">＋</span>
-            <span>登记新邮箱</span>
-          </button>
-        </div>
-      </div>
+      </template>
 
       <el-table
         v-loading="loading"
         :data="configs"
-        class="ledger-table"
         empty-text="尚无任何邮箱配置 — 点击「登记新邮箱」开始"
         stripe
+        style="width: 100%"
       >
-        <el-table-column type="index" label="№" width="60">
-          <template #default="{ $index }">
-            <span class="mono mute">{{ pad2($index + 1) }}</span>
+        <el-table-column type="index" label="#" width="60" align="center" />
+        <el-table-column label="邮箱" min-width="240">
+          <template #default="{ row }">
+            <span style="margin-right: 8px">{{ row.email_address }}</span>
+            <el-tag
+              :type="row.is_active ? 'success' : 'info'"
+              size="small"
+              effect="plain"
+            >
+              {{ row.is_active ? '启用' : '已暂停' }}
+            </el-tag>
           </template>
         </el-table-column>
-
-        <el-table-column label="邮箱" min-width="220">
+        <el-table-column label="服务器 / 端口" min-width="220">
           <template #default="{ row }">
-            <div class="cell-email">
-              <span class="cell-email__addr">{{ row.email_address }}</span>
-              <span
-                class="ribbon"
-                :class="row.is_active ? 'ribbon--on' : 'ribbon--off'"
-              >
-                {{ row.is_active ? 'ACTIVE' : 'PAUSED' }}
-              </span>
-            </div>
+            <span>{{ row.imap_server }}:{{ row.port }}</span>
+            <el-tag
+              v-if="row.use_ssl"
+              type="primary"
+              size="small"
+              effect="plain"
+              style="margin-left: 8px"
+            >
+              SSL
+            </el-tag>
           </template>
         </el-table-column>
-
-        <el-table-column label="服务器 / 端口" min-width="240">
+        <el-table-column label="拉取间隔" width="120">
           <template #default="{ row }">
-            <div class="cell-server">
-              <span class="mono">{{ row.imap_server }}</span>
-              <span class="cell-server__port mono">:{{ row.port }}</span>
-              <span v-if="row.use_ssl" class="ssl">SSL</span>
-            </div>
+            {{ row.check_interval_minutes }} 分钟
           </template>
         </el-table-column>
-
-        <el-table-column label="间隔" width="120">
+        <el-table-column label="最后拉取" width="180">
           <template #default="{ row }">
-            <span class="mono">{{ row.check_interval_minutes }} min</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="最后拉取" width="200">
-          <template #default="{ row }">
-            <span class="mono small mute">
-              {{ row.last_check_at ? formatDate(row.last_check_at, 'YYYY-MM-DD HH:mm') : '— 尚未拉取 —' }}
+            <span v-if="row.last_check_at">
+              {{ formatDate(row.last_check_at, 'YYYY-MM-DD HH:mm') }}
             </span>
+            <span v-else class="text-mute">尚未拉取</span>
           </template>
         </el-table-column>
-
-        <el-table-column label="操作" width="280" align="right">
+        <el-table-column label="操作" width="240" align="right" fixed="right">
           <template #default="{ row }">
-            <div class="ops">
-              <button
-                class="op op--fetch"
-                :disabled="fetchingId === row.id"
-                @click="handleFetch(row as EmailConfigItem)"
-                title="立即拉取"
-              >
-                {{ fetchingId === row.id ? '拉取中…' : '立即拉取' }}
-              </button>
-              <button class="op" @click="openEdit(row as EmailConfigItem)" title="编辑">编辑</button>
-              <button class="op op--danger" @click="handleDelete(row as EmailConfigItem)" title="删除">删除</button>
-            </div>
+            <el-button
+              type="primary"
+              link
+              size="small"
+              :loading="fetchingId === row.id"
+              @click="handleFetch(row as EmailConfigItem)"
+            >
+              立即拉取
+            </el-button>
+            <el-button
+              type="primary"
+              link
+              size="small"
+              @click="openEdit(row as EmailConfigItem)"
+            >
+              编辑
+            </el-button>
+            <el-button
+              type="danger"
+              link
+              size="small"
+              @click="handleDelete(row as EmailConfigItem)"
+            >
+              删除
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
-    </section>
+    </el-card>
 
-    <!-- 拉取日志卡片 -->
-    <section class="card">
-      <div class="card__head">
-        <div class="card__head-left">
-          <span class="filing">FILE NO. 06-B</span>
-          <h2 class="card__title">拉取日志</h2>
+    <!-- 拉取日志 -->
+    <el-card shadow="never" class="section-card">
+      <template #header>
+        <div class="card-header">
+          <span class="card-header__title">拉取日志</span>
+          <el-button :icon="Refresh" @click="loadLogs" :loading="logLoading">
+            刷新
+          </el-button>
         </div>
-        <div class="card__head-right">
-          <button class="btn-ghost" @click="loadLogs" :disabled="logLoading">
-            <span class="btn-ghost__icon">↻</span>
-            <span>刷新日志</span>
-          </button>
-        </div>
-      </div>
+      </template>
 
       <el-table
         v-loading="logLoading"
         :data="logs"
-        class="ledger-table"
         empty-text="尚无拉取记录"
+        stripe
+        style="width: 100%"
       >
-        <el-table-column label="时间" width="190">
+        <el-table-column label="时间" width="180">
           <template #default="{ row }">
-            <span class="mono small">
-              {{ row.fetch_time ? formatDate(row.fetch_time, 'YYYY-MM-DD HH:mm:ss') : '—' }}
+            <span v-if="row.fetch_time">
+              {{ formatDate(row.fetch_time, 'YYYY-MM-DD HH:mm:ss') }}
             </span>
+            <span v-else class="text-mute">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="邮箱" prop="email_address" min-width="220">
+        <el-table-column label="邮箱" min-width="220">
           <template #default="{ row }">
-            <span>{{ row.email_address || `#${row.config_id}` }}</span>
+            {{ row.email_address || `#${row.config_id}` }}
           </template>
         </el-table-column>
-        <el-table-column label="检索" width="100" align="center">
-          <template #default="{ row }">
-            <span class="mono mute">{{ row.total_emails_checked }}</span>
-          </template>
-        </el-table-column>
+        <el-table-column
+          prop="total_emails_checked"
+          label="检索"
+          width="100"
+          align="center"
+        />
         <el-table-column label="新增发票" width="120" align="center">
           <template #default="{ row }">
-            <span class="harvest" :class="{ 'harvest--zero': !row.new_invoices_count }">
+            <span :class="row.new_invoices_count ? 'text-success' : 'text-mute'">
               +{{ row.new_invoices_count }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="120">
+        <el-table-column label="状态" width="110">
           <template #default="{ row }">
-            <span class="status-pill" :class="`status-pill--${row.status}`">
-              <span class="status-pill__dot"></span>
+            <el-tag
+              :type="statusTagType(row.status)"
+              size="small"
+            >
               {{ statusLabel(row.status) }}
-            </span>
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="错误信息" min-width="240">
           <template #default="{ row }">
-            <span v-if="row.error_message" class="err">{{ row.error_message }}</span>
-            <span v-else class="mute">—</span>
+            <span v-if="row.error_message" class="text-danger">
+              {{ row.error_message }}
+            </span>
+            <span v-else class="text-mute">—</span>
           </template>
         </el-table-column>
       </el-table>
@@ -229,7 +220,7 @@
           @current-change="onLogPageChange"
         />
       </div>
-    </section>
+    </el-card>
 
     <!-- 添加/编辑对话框 -->
     <el-dialog
@@ -237,53 +228,50 @@
       :title="dialogTitle"
       width="540px"
       align-center
-      class="dossier-dialog"
       :close-on-click-modal="false"
       destroy-on-close
     >
-      <div class="dossier">
-        <div class="dossier__seal">
-          <span class="dossier__seal-text">SEAL · 06</span>
-        </div>
-        <el-form
-          ref="formRef"
-          :model="form"
-          :rules="rules"
-          label-position="top"
-          class="dossier__form"
-        >
-          <el-form-item label="邮箱地址" prop="email_address">
-            <el-input
-              v-model="form.email_address"
-              placeholder="例如 finance@your-company.com"
-              autocomplete="off"
-            />
-          </el-form-item>
+      <el-form
+        ref="formRef"
+        :model="form"
+        :rules="rules"
+        label-position="top"
+      >
+        <el-form-item label="邮箱地址" prop="email_address">
+          <el-input
+            v-model="form.email_address"
+            placeholder="例如 finance@your-company.com"
+            autocomplete="off"
+          />
+        </el-form-item>
 
-          <el-form-item label="IMAP 服务器" prop="imap_server">
-            <el-input
-              v-model="form.imap_server"
-              placeholder="imap.qq.com / imap.163.com / imap.exmail.qq.com"
-            />
-          </el-form-item>
+        <el-form-item label="IMAP 服务器" prop="imap_server">
+          <el-input
+            v-model="form.imap_server"
+            placeholder="imap.qq.com / imap.163.com / imap.exmail.qq.com"
+          />
+        </el-form-item>
 
-          <div class="row">
+        <el-row :gutter="16">
+          <el-col :span="8">
             <el-form-item label="端口" prop="port">
               <el-input-number
                 v-model="form.port"
                 :min="1"
                 :max="65535"
                 :controls="false"
-                style="width: 140px"
+                style="width: 100%"
               />
             </el-form-item>
-
-            <el-form-item label="SSL" prop="use_ssl">
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="启用 SSL" prop="use_ssl">
               <el-switch v-model="form.use_ssl" />
             </el-form-item>
-
+          </el-col>
+          <el-col :span="10">
             <el-form-item label="拉取频率" prop="check_interval_minutes">
-              <el-select v-model="form.check_interval_minutes" style="width: 160px">
+              <el-select v-model="form.check_interval_minutes" style="width: 100%">
                 <el-option :value="15" label="每 15 分钟" />
                 <el-option :value="30" label="每 30 分钟" />
                 <el-option :value="60" label="每 1 小时" />
@@ -291,48 +279,39 @@
                 <el-option :value="360" label="每 6 小时" />
               </el-select>
             </el-form-item>
-          </div>
+          </el-col>
+        </el-row>
 
-          <el-form-item label="密码 / 授权码" prop="password">
-            <el-input
-              v-model="form.password"
-              type="password"
-              show-password
-              :placeholder="editing ? '留空则不修改' : '从邮箱网页端获取的授权码'"
-              autocomplete="new-password"
-            />
-          </el-form-item>
+        <el-form-item label="密码 / 授权码" prop="password">
+          <el-input
+            v-model="form.password"
+            type="password"
+            show-password
+            :placeholder="editing ? '留空则不修改' : '从邮箱网页端获取的授权码'"
+            autocomplete="new-password"
+          />
+        </el-form-item>
 
-          <!-- 测试连接结果 -->
-          <transition name="probe">
-            <div v-if="probeResult" class="probe" :class="`probe--${probeResult.success ? 'ok' : 'err'}`">
-              <span class="probe__dot"></span>
-              <span class="probe__text">{{ probeResult.message }}</span>
-            </div>
-          </transition>
-        </el-form>
-      </div>
+        <transition name="el-fade-in">
+          <el-alert
+            v-if="probeResult"
+            :type="probeResult.success ? 'success' : 'error'"
+            :title="probeResult.message"
+            :closable="false"
+            show-icon
+            style="margin-top: 4px"
+          />
+        </transition>
+      </el-form>
 
       <template #footer>
-        <div class="dossier__footer">
-          <button
-            class="btn-ghost"
-            :disabled="probing"
-            @click="handleProbe"
-          >
-            <span class="dot dot--blue"></span>
-            <span>{{ probing ? '握手中…' : '测试连接' }}</span>
-          </button>
-          <span class="spacer"></span>
-          <button class="btn-ghost" @click="dialogVisible = false">取消</button>
-          <button
-            class="btn-solid"
-            :disabled="saving"
-            @click="handleSubmit"
-          >
-            {{ saving ? '保存中…' : (editing ? '保存修改' : '登记邮箱') }}
-          </button>
-        </div>
+        <el-button :loading="probing" @click="handleProbe">
+          {{ probing ? '握手中…' : '测试连接' }}
+        </el-button>
+        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="handleSubmit">
+          {{ editing ? '保存修改' : '登记邮箱' }}
+        </el-button>
       </template>
     </el-dialog>
   </div>
@@ -342,6 +321,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Refresh } from '@element-plus/icons-vue'
 import {
   createEmailConfig,
   deleteEmailConfig,
@@ -391,17 +371,15 @@ const rules: FormRules = {
   ],
   imap_server: [{ required: true, message: '请输入 IMAP 服务器', trigger: 'blur' }],
   port: [{ required: true, message: '请输入端口', trigger: 'blur' }],
-  check_interval_minutes: [{ required: true, message: '请选择拉取频率', trigger: 'change' }],
+  check_interval_minutes: [
+    { required: true, message: '请选择拉取频率', trigger: 'change' },
+  ],
 }
 
 /* ------------------------- computed ------------------------- */
-const dialogTitle = computed(() =>
-  editing.value ? '修改邮箱档案' : '登记新邮箱档案'
-)
+const dialogTitle = computed(() => (editing.value ? '修改邮箱配置' : '登记新邮箱'))
 
-const activeCount = computed(() =>
-  configs.value.filter((c) => c.is_active).length
-)
+const activeCount = computed(() => configs.value.filter((c) => c.is_active).length)
 
 const lastPoll = computed<Date | null>(() => {
   let latest: Date | null = null
@@ -414,19 +392,19 @@ const lastPoll = computed<Date | null>(() => {
 })
 
 const lastPollLabel = computed(() => {
-  if (!lastPoll.value) return '— : —'
+  if (!lastPoll.value) return '—'
   return formatDate(lastPoll.value, 'HH:mm:ss')
 })
 
 const lastPollRelative = computed(() => {
-  if (!lastPoll.value) return 'never'
+  if (!lastPoll.value) return '从未'
   const diff = Math.max(0, Date.now() - lastPoll.value.getTime())
   const min = Math.floor(diff / 60000)
-  if (min < 1) return 'just now'
-  if (min < 60) return `${min} min ago`
+  if (min < 1) return '刚刚'
+  if (min < 60) return `${min} 分钟前`
   const h = Math.floor(min / 60)
-  if (h < 24) return `${h} h ago`
-  return `${Math.floor(h / 24)} d ago`
+  if (h < 24) return `${h} 小时前`
+  return `${Math.floor(h / 24)} 天前`
 })
 
 const todayHarvest = computed(() => {
@@ -445,16 +423,7 @@ const todayHarvest = computed(() => {
   return total
 })
 
-const nowStamp = ref('')
-function tickClock() {
-  nowStamp.value = formatDate(new Date(), 'YYYY.MM.DD · HH:mm')
-}
-
 /* ------------------------- helpers ------------------------- */
-function pad2(n: number) {
-  return String(n).padStart(2, '0')
-}
-
 function statusLabel(s: string) {
   const map: Record<string, string> = {
     success: '成功',
@@ -464,13 +433,20 @@ function statusLabel(s: string) {
   return map[s] || s
 }
 
+function statusTagType(s: string): 'success' | 'warning' | 'danger' | 'info' {
+  if (s === 'success') return 'success'
+  if (s === 'failed') return 'danger'
+  if (s === 'partial') return 'warning'
+  return 'info'
+}
+
 /* ------------------------- data loaders ------------------------- */
 async function loadConfigs() {
   loading.value = true
   try {
     const data = (await getEmailConfigs()) as unknown as EmailConfigItem[]
     configs.value = data || []
-  } catch (e) {
+  } catch {
     /* 错误已由拦截器提示 */
   } finally {
     loading.value = false
@@ -486,7 +462,7 @@ async function loadLogs() {
     })) as unknown as { total: number; items: EmailFetchLogItem[] }
     logs.value = data?.items || []
     logTotal.value = data?.total || 0
-  } catch (e) {
+  } catch {
     /* swallow */
   } finally {
     logLoading.value = false
@@ -551,7 +527,7 @@ async function handleProbe() {
     } else {
       ElMessage.error(res.message || '连接失败')
     }
-  } catch (e) {
+  } catch {
     probeResult.value = { success: false, message: '请求失败' }
   } finally {
     probing.value = false
@@ -597,7 +573,7 @@ async function handleSubmit() {
     }
     dialogVisible.value = false
     await loadConfigs()
-  } catch (e) {
+  } catch {
     /* swallow */
   } finally {
     saving.value = false
@@ -609,7 +585,7 @@ async function handleDelete(row: EmailConfigItem) {
     await ElMessageBox.confirm(
       `确认删除邮箱「${row.email_address}」的配置？此操作不可撤销。`,
       '删除确认',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
     )
   } catch {
     return
@@ -636,7 +612,7 @@ async function handleFetch(row: EmailConfigItem) {
       ElMessage.error(`拉取失败：${res.errors?.[0] || '未知错误'}`)
     } else {
       ElMessage.success(
-        `拉取完成 · 检索 ${res.total_emails_checked} 封 · 新增 ${res.new_invoices_found} 张发票`
+        `拉取完成 · 检索 ${res.total_emails_checked} 封 · 新增 ${res.new_invoices_found} 张发票`,
       )
     }
     await Promise.all([loadConfigs(), loadLogs()])
@@ -649,555 +625,90 @@ async function handleFetch(row: EmailConfigItem) {
 
 /* ------------------------- lifecycle ------------------------- */
 onMounted(() => {
-  tickClock()
-  setInterval(tickClock, 30_000)
   loadConfigs()
   loadLogs()
 })
 </script>
 
-<style scoped lang="scss">
-/* ------ 字体: 引入特色字体. 避免 Inter / Roboto / Arial. ------ */
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,800;1,9..144,500;1,9..144,700&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
-.ledger {
-  --ink:        #0a1628;
-  --ink-soft:   #1f2c3f;
-  --paper:      #f3ecdd;
-  --paper-2:    #ebe3d2;
-  --paper-edge: #d8cfba;
-  --iron:       #6b6862;
-  --vermilion:  #c43a1d;
-  --mariner:    #1f3d6b;
-  --verdigris:  #3f6b56;
-  --amber:      #b07a1f;
-
-  --serif: 'Fraunces', 'Cormorant Garamond', Georgia, serif;
-  --sans:  'Manrope', system-ui, sans-serif;
-  --mono:  'JetBrains Mono', ui-monospace, monospace;
-
-  position: relative;
-  min-height: 100%;
-  padding: 40px 56px 80px;
-  background: var(--paper);
-  color: var(--ink);
-  font-family: var(--sans);
-  letter-spacing: 0.01em;
-  overflow: hidden;
-
-  @media (max-width: 1024px) {
-    padding: 24px 20px 60px;
-  }
-}
-
-/* 噪点 + 装饰 ----------------------------------------------- */
-.ledger__grain {
-  position: absolute; inset: 0;
-  pointer-events: none;
-  background-image:
-    radial-gradient(rgba(10, 22, 40, 0.06) 1px, transparent 1px),
-    radial-gradient(rgba(10, 22, 40, 0.04) 1px, transparent 1px);
-  background-size: 3px 3px, 7px 7px;
-  background-position: 0 0, 1px 2px;
-  opacity: 0.65;
-  mix-blend-mode: multiply;
-}
-.ledger__rule {
-  position: absolute;
-  inset: 16px 24px;
-  pointer-events: none;
-  border: 1px solid rgba(10, 22, 40, 0.18);
-  outline: 1px solid rgba(10, 22, 40, 0.08);
-  outline-offset: 4px;
-
-  @media (max-width: 1024px) { inset: 8px 8px; }
-}
-
-/* console header --------------------------------------------- */
-.console {
-  position: relative;
-  z-index: 1;
-  padding-bottom: 28px;
-  border-bottom: 1px solid var(--paper-edge);
-  margin-bottom: 28px;
-}
-.console__overline {
-  display: flex; align-items: center; gap: 10px;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.18em;
-  color: var(--iron);
-  text-transform: uppercase;
-  margin-bottom: 10px;
-
-  .sep { opacity: 0.4; }
-}
-.dot {
-  display: inline-block;
-  width: 7px; height: 7px;
-  border-radius: 50%;
-  background: var(--iron);
-}
-.dot--live {
-  background: var(--vermilion);
-  box-shadow: 0 0 0 3px rgba(196, 58, 29, 0.18);
-  animation: pulse 1.6s ease-in-out infinite;
-}
-.dot--blue { background: var(--mariner); }
-@keyframes pulse {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50%      { transform: scale(1.25); opacity: 0.7; }
-}
-
-.console__title {
-  font-family: var(--serif);
-  font-size: clamp(40px, 6vw, 72px);
-  line-height: 0.96;
-  letter-spacing: -0.02em;
-  margin: 0;
-  color: var(--ink);
-  font-weight: 600;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.18em;
-
-  .word.italic    { font-style: italic; font-weight: 500; color: var(--vermilion); }
-  .word.ampersand { font-style: italic; font-weight: 400; color: var(--iron); }
-}
-.console__subtitle {
-  margin: 14px 0 0;
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 17px;
-  color: var(--iron);
-  max-width: 720px;
-}
-
-/* metrics ribbon --------------------------------------------- */
-.metrics {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0;
-  margin-top: 32px;
-  border-top: 1px solid var(--paper-edge);
-  border-bottom: 1px solid var(--paper-edge);
-
-  @media (max-width: 900px) { grid-template-columns: repeat(2, 1fr); }
-}
-.metric {
-  padding: 18px 22px;
-  border-right: 1px solid var(--paper-edge);
+<style scoped>
+.email-config-page {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-
-  &:last-child { border-right: none; }
-
-  &__label {
-    font-family: var(--mono);
-    font-size: 10.5px;
-    letter-spacing: 0.22em;
-    color: var(--iron);
-    text-transform: uppercase;
-  }
-  &__value {
-    font-family: var(--serif);
-    font-size: 38px;
-    line-height: 1;
-    font-weight: 600;
-    color: var(--ink);
-
-    &.mono { font-family: var(--mono); font-size: 26px; font-weight: 500; }
-    &.small { font-size: 22px; }
-  }
-  &__suffix {
-    font-family: var(--sans);
-    font-size: 12px;
-    color: var(--iron);
-    letter-spacing: 0.04em;
-  }
-}
-
-/* hint alert ------------------------------------------------- */
-.hint {
-  position: relative;
-  z-index: 1;
-  margin-bottom: 24px;
-  border-left: 3px solid var(--vermilion);
-  background: var(--paper-2);
-
-  :deep(.el-alert__title) { font-weight: 600; }
-}
-.hint__title {
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 17px;
-  color: var(--ink);
-  letter-spacing: -0.01em;
-}
-.hint__body {
-  margin: 4px 0 0;
-  font-size: 13.5px;
-  color: var(--ink-soft);
-  line-height: 1.55;
-
-  em { font-family: var(--serif); font-style: italic; color: var(--vermilion); font-size: 14px; }
-  code {
-    font-family: var(--mono);
-    font-size: 12.5px;
-    padding: 1px 5px;
-    background: rgba(10, 22, 40, 0.08);
-    border-radius: 2px;
-    margin: 0 2px;
-  }
-}
-
-/* card ------------------------------------------------------- */
-.card {
-  position: relative;
-  z-index: 1;
-  background: var(--paper-2);
-  border: 1px solid var(--paper-edge);
-  margin-bottom: 28px;
-  box-shadow: 0 1px 0 rgba(10, 22, 40, 0.04), 0 18px 30px -22px rgba(10, 22, 40, 0.18);
-}
-.card__head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  padding: 22px 26px 14px;
-  border-bottom: 1px solid var(--paper-edge);
-  flex-wrap: wrap;
   gap: 16px;
 }
-.card__head-left { display: flex; flex-direction: column; gap: 4px; }
-.card__head-right { display: flex; gap: 10px; }
-.filing {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.22em;
-  color: var(--vermilion);
-  text-transform: uppercase;
-}
-.card__title {
-  font-family: var(--serif);
-  font-size: 28px;
-  font-weight: 600;
-  line-height: 1.05;
-  margin: 0;
-  letter-spacing: -0.01em;
-  color: var(--ink);
-}
 
-/* buttons ---------------------------------------------------- */
-.btn-ghost,
-.btn-solid {
-  font-family: var(--mono);
+.hint-alert :deep(code) {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: ui-monospace, Menlo, monospace;
   font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: 9px 16px;
-  border: 1px solid var(--ink);
-  background: transparent;
-  color: var(--ink);
-  cursor: pointer;
-  transition: all 0.18s ease;
-  display: inline-flex; align-items: center; gap: 8px;
-  border-radius: 0;
-  height: auto;
-
-  &:disabled { opacity: 0.5; cursor: not-allowed; }
-  &:not(:disabled):hover {
-    background: var(--ink);
-    color: var(--paper);
-  }
-}
-.btn-ghost__icon { font-size: 14px; }
-.btn-solid {
-  background: var(--ink);
-  color: var(--paper);
-
-  &:not(:disabled):hover {
-    background: var(--vermilion);
-    border-color: var(--vermilion);
-  }
-}
-.btn-solid__plus { font-family: var(--serif); font-size: 18px; line-height: 0.7; }
-
-/* table styling ---------------------------------------------- */
-.ledger-table {
-  --el-table-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
-  --el-table-row-hover-bg-color: rgba(10, 22, 40, 0.04);
-  --el-table-border-color: var(--paper-edge);
-  --el-table-header-bg-color: transparent;
-  --el-table-header-text-color: var(--iron);
-  --el-table-text-color: var(--ink);
-
-  background: transparent !important;
-
-  :deep(.el-table__inner-wrapper::before) { display: none; }
-  :deep(th.el-table__cell) {
-    background: transparent !important;
-    border-bottom: 1px solid var(--paper-edge);
-    font-family: var(--mono);
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-    color: var(--iron);
-    padding: 10px 0;
-  }
-  :deep(td.el-table__cell) {
-    background: transparent !important;
-    border-bottom: 1px dashed var(--paper-edge);
-    font-size: 14px;
-    padding: 14px 0;
-  }
-  :deep(.el-table__empty-text) {
-    font-family: var(--serif);
-    font-style: italic;
-    color: var(--iron);
-    font-size: 16px;
-  }
+  margin: 0 2px;
 }
 
-.cell-email {
-  display: flex; align-items: center; gap: 10px;
-  &__addr { font-weight: 600; color: var(--ink); }
-}
-.ribbon {
-  display: inline-flex; align-items: center;
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  padding: 2px 7px;
-  border-radius: 1px;
-
-  &--on  { background: rgba(63, 107, 86, 0.14); color: var(--verdigris); border: 1px solid rgba(63, 107, 86, 0.4); }
-  &--off { background: rgba(176, 122, 31, 0.14); color: var(--amber); border: 1px solid rgba(176, 122, 31, 0.4); }
-}
-.cell-server { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  &__port { color: var(--vermilion); font-weight: 600; }
-}
-.ssl {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  padding: 1px 5px;
-  background: var(--ink);
-  color: var(--paper);
-}
-.ops { display: flex; gap: 6px; justify-content: flex-end; }
-.op {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  padding: 5px 10px;
-  border: 1px solid var(--paper-edge);
-  background: transparent;
-  color: var(--ink);
-  cursor: pointer;
-  text-transform: uppercase;
-  transition: all 0.15s;
-  border-radius: 0;
-
-  &:hover:not(:disabled) {
-    background: var(--ink);
-    color: var(--paper);
-    border-color: var(--ink);
-  }
-  &:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  &--fetch {
-    border-color: var(--mariner);
-    color: var(--mariner);
-    &:hover:not(:disabled) { background: var(--mariner); border-color: var(--mariner); color: var(--paper); }
-  }
-  &--danger {
-    border-color: rgba(196, 58, 29, 0.5);
-    color: var(--vermilion);
-    &:hover:not(:disabled) { background: var(--vermilion); border-color: var(--vermilion); color: var(--paper); }
-  }
+.metrics-row > .el-col {
+  margin-bottom: 16px;
 }
 
-/* status pill ------------------------------------------------ */
-.status-pill {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.12em;
-  padding: 3px 8px;
-  border: 1px solid currentColor;
-  text-transform: uppercase;
-
-  &__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-
-  &--success { color: var(--verdigris); }
-  &--failed  { color: var(--vermilion); }
-  &--partial { color: var(--amber); }
+.metric-card {
+  border-radius: 4px;
 }
-.harvest {
-  font-family: var(--mono);
+
+.metric-card__label {
+  font-size: 13px;
+  color: #909399;
+  margin-bottom: 8px;
+}
+
+.metric-card__value {
+  font-size: 24px;
   font-weight: 600;
-  font-size: 14px;
-  color: var(--verdigris);
-  &--zero { color: var(--iron); }
+  color: #303133;
 }
-.err  { color: var(--vermilion); font-size: 13px; }
-.mute { color: var(--iron); }
-.mono { font-family: var(--mono); }
-.small { font-size: 12.5px; }
 
-/* pager ------------------------------------------------------ */
+.metric-card__value--small {
+  font-size: 18px;
+}
+
+.metric-card__sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
+}
+
+.section-card {
+  border-radius: 4px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card-header__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+
 .pager {
-  padding: 14px 26px 18px;
-  display: flex; justify-content: flex-end;
-
-  :deep(.el-pagination .el-pager li),
-  :deep(.el-pagination button) {
-    background: transparent !important;
-    color: var(--ink);
-    font-family: var(--mono);
-    border-radius: 0 !important;
-  }
-  :deep(.el-pagination.is-background .el-pager li.is-active) {
-    background: var(--ink) !important;
-    color: var(--paper) !important;
-  }
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
-/* dialog ----------------------------------------------------- */
-.dossier-dialog {
-  :deep(.el-dialog) {
-    background: var(--paper);
-    border: 1px solid var(--ink);
-    border-radius: 0;
-    box-shadow: 0 30px 60px -20px rgba(10, 22, 40, 0.45);
-    overflow: hidden;
-  }
-  :deep(.el-dialog__header) {
-    padding: 20px 28px 8px;
-    border-bottom: 1px solid var(--paper-edge);
-    margin: 0;
-  }
-  :deep(.el-dialog__title) {
-    font-family: var(--serif);
-    font-style: italic;
-    font-size: 22px;
-    font-weight: 600;
-    color: var(--ink);
-    letter-spacing: -0.01em;
-  }
-  :deep(.el-dialog__body) { padding: 0; }
-  :deep(.el-dialog__footer) {
-    border-top: 1px solid var(--paper-edge);
-    padding: 14px 24px;
-    background: var(--paper-2);
-  }
-}
-.dossier {
-  position: relative;
-  padding: 24px 28px 16px;
-}
-.dossier__seal {
-  position: absolute;
-  top: -10px;
-  right: 22px;
-  width: 76px; height: 76px;
-  border: 1.5px solid var(--vermilion);
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  transform: rotate(-12deg);
-  pointer-events: none;
-  opacity: 0.85;
-
-  &::before {
-    content: '';
-    position: absolute; inset: 5px;
-    border: 1px dashed rgba(196, 58, 29, 0.5);
-    border-radius: 50%;
-  }
-  &-text {
-    font-family: var(--mono);
-    font-size: 10px;
-    letter-spacing: 0.22em;
-    color: var(--vermilion);
-    text-transform: uppercase;
-  }
+.text-mute {
+  color: #909399;
 }
 
-.dossier__form {
-  :deep(.el-form-item__label) {
-    font-family: var(--mono);
-    font-size: 10.5px !important;
-    letter-spacing: 0.16em;
-    color: var(--iron) !important;
-    text-transform: uppercase;
-    padding-bottom: 4px !important;
-  }
-  :deep(.el-input__wrapper),
-  :deep(.el-input-number),
-  :deep(.el-select__wrapper) {
-    background: transparent !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-    border-bottom: 1px solid var(--paper-edge) !important;
-    padding: 0 !important;
-    transition: border-color 0.18s;
-
-    &:hover, &.is-focus, &:focus-within {
-      border-bottom-color: var(--ink) !important;
-    }
-  }
-  :deep(.el-input__inner) {
-    font-family: var(--mono);
-    font-size: 14px;
-    color: var(--ink);
-    height: 36px;
-
-    &::placeholder { color: rgba(107, 104, 98, 0.6); font-style: italic; }
-  }
-  :deep(.el-input-number .el-input__inner) {
-    text-align: left;
-    padding-left: 0;
-  }
-  :deep(.el-input-number .el-input__wrapper) { padding-left: 0 !important; }
-  :deep(.el-switch.is-checked .el-switch__core) {
-    background: var(--ink) !important;
-    border-color: var(--ink) !important;
-  }
+.text-success {
+  color: #67c23a;
+  font-weight: 500;
 }
 
-.row {
-  display: grid;
-  grid-template-columns: 1fr 1fr 2fr;
-  gap: 18px;
-  align-items: end;
-
-  @media (max-width: 600px) { grid-template-columns: 1fr; }
-}
-
-.probe {
-  margin-top: 10px;
-  padding: 10px 14px;
-  display: flex; align-items: center; gap: 10px;
-  font-family: var(--mono);
-  font-size: 12.5px;
-  border-left: 3px solid;
-
-  &__dot { width: 8px; height: 8px; border-radius: 50%; }
-  &__text { flex: 1; word-break: break-all; }
-
-  &--ok  { background: rgba(63, 107, 86, 0.1); border-color: var(--verdigris); color: var(--verdigris); .probe__dot { background: var(--verdigris); } }
-  &--err { background: rgba(196, 58, 29, 0.1); border-color: var(--vermilion); color: var(--vermilion); .probe__dot { background: var(--vermilion); } }
-}
-.probe-enter-active, .probe-leave-active { transition: all 0.25s ease; }
-.probe-enter-from, .probe-leave-to { opacity: 0; transform: translateY(-4px); }
-
-.dossier__footer {
-  display: flex; align-items: center; gap: 10px;
-  .spacer { flex: 1; }
+.text-danger {
+  color: #f56c6c;
 }
 </style>

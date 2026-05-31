@@ -10,6 +10,20 @@ class InvoiceCreate(BaseModel):
     original_filename: Optional[str] = Field(None, description="原始文件名")
 
 
+class SkippedFile(BaseModel):
+    """跳过的重复文件信息"""
+    filename: str
+    reason: str
+    existing_id: Optional[int] = None
+
+
+class InvoiceUploadResult(BaseModel):
+    """发票上传结果（含去重信息）"""
+    uploaded: list["InvoiceResponse"] = Field(default_factory=list, description="成功上传的发票列表")
+    skipped: list[SkippedFile] = Field(default_factory=list, description="跳过的重复文件列表")
+    message: str = Field("", description="汇总提示")
+
+
 class InvoiceUpdate(BaseModel):
     """更新发票请求"""
     invoice_no: Optional[str] = None
@@ -46,6 +60,9 @@ class InvoiceResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+InvoiceUploadResult.model_rebuild()
 
 
 class RecognitionResult(BaseModel):

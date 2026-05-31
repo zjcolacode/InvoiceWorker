@@ -7,29 +7,57 @@ import json
 import logging
 import os
 import re
+import tempfile
 from io import BytesIO
 from pathlib import Path
 
 import httpx
 from PIL import Image
 
+try:
+    import fitz  # PyMuPDF
+except ImportError:  # pragma: no cover
+    fitz = None
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# DashScope OpenAI兼容接口地址
-DASHSCOPE_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-DASHSCOPE_MODEL = "qwen-vl-max"
+# DashScope OpenAI兼容接口地址（从配置读取）
 
 # 图片大小限制 (4MB)
 MAX_IMAGE_SIZE = 4 * 1024 * 1024
 
 
-def _build_recognition_prompt() -> str:
-    """构建发票识别Prompt"""
-    return """请仔细识别这张发票图片中的所有信息，并严格按照以下JSON格式返回结果。如果某个字段无法识别，请填写null。
+# 默认分类列表（当数据库分类列表为空时使用）
+DEFAULT_CATEGORIES = [
+    "办公用品",
+    "交通费",
+    "餐饮费",
+    "住宿费",
+    "通讯费",
+    "服务费",
+    "设备购置",
+    "其他",
+]
 
-{
+
+def _build_recognition_prompt(category_names: list[str] | None = None) -> str:
+    """构建发票识别Prompt
+
+    Args:
+        category_names: 可选的费用分类名称列表，用于让模型推理发票分类。
+            若为空，则使用 DEFAULT_CATEGORIES。
+    """
+    categories = category_names if category_names else DEFAULT_CATEGORIES
+    # 确保 "其他" 始终存在，作为兜底分类
+    if "其他" not in categories:
+        categories = list(categories) + ["其他"]
+    categories_str = ", ".join(categories)
+
+    return f"""请仔细识别这张发票图片中的所有信息，并严格按照以下JSON格式返回结果。如果某个字段无法识别，请填写null。
+
+{{
   "invoice_no": "发票号码(纯数字)",
   "invoice_code": "发票代码(如有)",
   "invoice_date": "开票日期，格式：YYYY-MM-DD",
@@ -43,8 +71,24 @@ def _build_recognition_prompt() -> str:
   "tax": 税额(数字类型),
   "total": 价税合计(数字类型),
   "invoice_type": "发票类型(增值税普通发票/增值税专用发票/增值税电子普通发票/增值税电子专用发票等)",
-  "remarks": "备注信息(如有)"
-}
+  "remarks": "备注信息(如有)",
+  "category": "费用分类"
+}}
+
+关于 category 字段，请根据发票的开票内容(items)判断该发票最可能属于以下哪个费用分类：
+[{categories_str}]
+
+判断规则：
+- 办公用品：文具、打印、复印、耗材、纸张等
+- 交通费：出租车、打车、高铁、火车、飞机、机票、停车、加油、过路费等
+- 餐饮费：餐饮、餐费、饮食、餐厅、外卖、食品等
+- 住宿费：住宿、酒店、宾馆、旅馆、客房等
+- 通讯费：电话、话费、流量、宽带、网络等
+- 服务费：咨询、顾问、技术服务、软件、系统、开发、维护、设计等
+- 设备购置：电脑、服务器、显示器、键盘、鼠标、硬件设备等
+- 其他：无法归入以上任何分类
+
+如果无法确定分类，请填写"其他"。category 字段必须是上述分类列表中的一个名称。
 
 注意：金额相关字段请返回数字而非字符串，日期请统一为YYYY-MM-DD格式。"""
 
@@ -92,19 +136,32 @@ def _image_to_base64(file_path: str) -> str:
     return base64.b64encode(image_data).decode("utf-8")
 
 
-def _pdf_to_base64(file_path: str) -> str:
-    """将PDF第一页转为图片base64编码"""
-    try:
-        # 使用Pillow尝试直接打开（某些PDF可以直接打开）
-        # 对于标准PDF，先读取原始数据用base64编码
-        with open(file_path, "rb") as f:
-            pdf_data = f.read()
+def _pdf_to_image(file_path: str) -> str:
+    """将PDF第一页转为PNG临时文件，返回临时图片路径。
 
-        # 直接将PDF以base64编码发送
-        return base64.b64encode(pdf_data).decode("utf-8")
-    except Exception as e:
-        logger.error(f"PDF转换失败: {file_path}, 错误: {e}")
-        raise
+    Qwen 视觉API仅接受 jpg/png/webp 等图片格式，不支持PDF原始字节，
+    因此需要先用 PyMuPDF 把PDF的第一页栅格化为PNG再送入识别接口。
+    """
+    if fitz is None:
+        raise RuntimeError(
+            "未安装 PyMuPDF (fitz)，无法处理PDF文件。请执行 pip install PyMuPDF"
+        )
+
+    doc = fitz.open(file_path)
+    try:
+        if doc.page_count < 1:
+            raise ValueError(f"PDF无可用页面: {file_path}")
+        page = doc[0]  # 取第一页
+        # 2x缩放 ≈ 144 DPI，兼顾清晰度与体积
+        mat = fitz.Matrix(2.0, 2.0)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        fd, temp_path = tempfile.mkstemp(suffix=".png", prefix="invoice_pdf_")
+        os.close(fd)
+        pix.save(temp_path)
+    finally:
+        doc.close()
+
+    return temp_path
 
 
 def _get_mime_type(file_path: str) -> str:
@@ -170,12 +227,16 @@ def _parse_recognition_result(response_text: str) -> dict:
     return result
 
 
-async def recognize_invoice(file_path: str) -> dict:
+async def recognize_invoice(
+    file_path: str,
+    categories: list[str] | None = None,
+) -> dict:
     """
     识别单张发票
 
     Args:
         file_path: 发票文件路径
+        categories: 可选的费用分类名称列表，传入后模型会同时推理发票分类。
 
     Returns:
         dict: {"success": bool, "data": dict|None, "error": str|None}
@@ -191,10 +252,13 @@ async def recognize_invoice(file_path: str) -> dict:
 
     # 获取文件类型并转为base64
     ext = Path(file_path).suffix.lower()
+    temp_image_path: str | None = None
     try:
         if ext == ".pdf":
-            base64_data = _pdf_to_base64(file_path)
-            mime_type = "application/pdf"
+            # PDF需要先转为PNG图片再送给视觉模型
+            temp_image_path = _pdf_to_image(file_path)
+            base64_data = _image_to_base64(temp_image_path)
+            mime_type = "image/png"
         elif ext in (".jpg", ".jpeg", ".png"):
             base64_data = _image_to_base64(file_path)
             mime_type = _get_mime_type(file_path)
@@ -203,9 +267,16 @@ async def recognize_invoice(file_path: str) -> dict:
     except Exception as e:
         logger.error(f"文件处理失败: {file_path}, 错误: {e}")
         return {"success": False, "data": None, "error": f"文件处理失败: {str(e)}"}
+    finally:
+        # 临时PNG无论成功失败都清理
+        if temp_image_path and os.path.exists(temp_image_path):
+            try:
+                os.remove(temp_image_path)
+            except OSError as cleanup_err:
+                logger.warning(f"清理临时PDF转图片文件失败: {temp_image_path}, {cleanup_err}")
 
     # 构建请求消息
-    prompt = _build_recognition_prompt()
+    prompt = _build_recognition_prompt(categories)
     messages = [
         {
             "role": "user",
@@ -227,15 +298,16 @@ async def recognize_invoice(file_path: str) -> dict:
         try:
             logger.info(f"开始识别发票: {file_path} (第{attempt + 1}次尝试)")
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            api_url = f"{settings.DASHSCOPE_BASE_URL.rstrip('/')}/chat/completions"
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
-                    DASHSCOPE_API_URL,
+                    api_url,
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                     },
                     json={
-                        "model": DASHSCOPE_MODEL,
+                        "model": settings.VISION_MODEL,
                         "messages": messages,
                     },
                 )
@@ -288,12 +360,16 @@ async def recognize_invoice(file_path: str) -> dict:
     return {"success": False, "data": None, "error": "未知错误"}
 
 
-async def batch_recognize(file_paths: list[str]) -> list[dict]:
+async def batch_recognize(
+    file_paths: list[str],
+    categories: list[str] | None = None,
+) -> list[dict]:
     """
     批量识别发票
 
     Args:
         file_paths: 发票文件路径列表
+        categories: 可选的费用分类名称列表，传入后模型会同时推理发票分类。
 
     Returns:
         list[dict]: 每个文件的识别结果列表
@@ -301,7 +377,7 @@ async def batch_recognize(file_paths: list[str]) -> list[dict]:
     results = []
     for i, file_path in enumerate(file_paths):
         logger.info(f"批量识别进度: {i + 1}/{len(file_paths)}, 文件: {file_path}")
-        result = await recognize_invoice(file_path)
+        result = await recognize_invoice(file_path, categories=categories)
         results.append(result)
 
         # 每次识别间隔1秒，避免限流（最后一次不需要等待）

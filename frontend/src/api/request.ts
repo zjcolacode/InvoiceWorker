@@ -15,6 +15,13 @@ const request = axios.create({
   },
 })
 
+// 全局标志：是否抑制自动错误提示（批量操作时使用）
+let suppressErrorMessage = false
+
+export function setSuppressErrorMessage(suppress: boolean) {
+  suppressErrorMessage = suppress
+}
+
 // Request — attach Bearer token
 request.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
@@ -31,34 +38,42 @@ request.interceptors.request.use(
 request.interceptors.response.use(
   (response: AxiosResponse) => response.data,
   (error) => {
-    if (error.response) {
-      const { status, data } = error.response
-      const detail = (data && (data.detail || data.message)) || ''
-      switch (status) {
-        case 401:
-          ElMessage.error('登录已过期，请重新登录')
-          localStorage.removeItem('token')
-          if (location.pathname !== '/login') {
-            location.href = '/login'
-          }
-          break
-        case 403:
-          ElMessage.error(detail || '没有权限访问该资源')
-          break
-        case 404:
-          ElMessage.error(detail || '请求资源不存在')
-          break
-        case 422:
-          ElMessage.error(detail || '请求参数有误')
-          break
-        case 500:
-          ElMessage.error(detail || '服务器内部错误')
-          break
-        default:
-          ElMessage.error(detail || `请求失败 (${status})`)
+    if (!suppressErrorMessage) {
+      if (error.response) {
+        const { status, data } = error.response
+        const detail = (data && (data.detail || data.message)) || ''
+        switch (status) {
+          case 401:
+            ElMessage.error('登录已过期，请重新登录')
+            localStorage.removeItem('token')
+            if (location.pathname !== '/login') {
+              location.href = '/login'
+            }
+            break
+          case 403:
+            ElMessage.error(detail || '没有权限访问该资源')
+            break
+          case 404:
+            ElMessage.error(detail || '请求资源不存在')
+            break
+          case 422:
+            ElMessage.error(detail || '请求参数有误')
+            break
+          case 500:
+            ElMessage.error(detail || '服务器内部错误')
+            break
+          default:
+            ElMessage.error(detail || `请求失败 (${status})`)
+        }
+      } else {
+        ElMessage.error('网络连接失败，请检查后端服务')
       }
-    } else {
-      ElMessage.error('网络连接失败，请检查后端服务')
+    } else if (error.response?.status === 401) {
+      // 401仍需处理跳转
+      localStorage.removeItem('token')
+      if (location.pathname !== '/login') {
+        location.href = '/login'
+      }
     }
     return Promise.reject(error)
   },

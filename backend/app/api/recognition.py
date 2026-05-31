@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.models.category import Category
 from app.models.invoice import Invoice
 from app.models.user import User
 from app.schemas.invoice import (
@@ -21,6 +22,25 @@ from app.services.invoice_recognition import recognize_invoice, batch_recognize
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _get_active_category_names(db: Session) -> list[str]:
+    """获取数据库中启用状态的分类名称列表"""
+    rows = (
+        db.query(Category.name)
+        .filter(Category.is_active == True)  # noqa: E712
+        .all()
+    )
+    return [r[0] for r in rows if r[0]]
+
+
+def _normalize_category(value: str | None, allowed: list[str]) -> str:
+    """将模型返回的分类值规范化为允许列表中的名称，否则返回“其他”"""
+    if value and isinstance(value, str):
+        v = value.strip()
+        if v in allowed:
+            return v
+    return "其他"
 
 
 @router.post("/recognize/{invoice_id}", response_model=RecognitionResult)
@@ -54,8 +74,11 @@ async def recognize_single_invoice(
 
     logger.info(f"开始识别发票 id={invoice_id}, file={invoice.file_path}")
 
+    # 获取启用的分类名称列表，供模型同步推理分类
+    category_names = _get_active_category_names(db)
+
     # 调用识别服务
-    result = await recognize_invoice(invoice.file_path)
+    result = await recognize_invoice(invoice.file_path, categories=category_names)
 
     # 如果识别成功，更新数据库记录
     if result["success"] and result["data"]:
@@ -68,6 +91,8 @@ async def recognize_single_invoice(
         invoice.tax = data.get("tax")
         invoice.total = data.get("total")
         invoice.items = data.get("items")
+        # 校验模型返回的分类，不在启用分类列表中的统一设为“其他”
+        invoice.category = _normalize_category(data.get("category"), category_names)
         invoice.status = "recognized"
         invoice.recognized_at = datetime.now(timezone.utc)
         db.commit()
@@ -144,10 +169,13 @@ async def batch_recognize_invoices(
             file_paths.append(inv.file_path)
             valid_ids.append(inv_id)
 
+    # 获取启用的分类名称列表，供模型同步推理分类
+    category_names = _get_active_category_names(db)
+
     # 批量识别
     if file_paths:
         logger.info(f"开始批量识别 {len(file_paths)} 张发票")
-        recognition_results = await batch_recognize(file_paths)
+        recognition_results = await batch_recognize(file_paths, categories=category_names)
 
         for inv_id, rec_result in zip(valid_ids, recognition_results):
             inv = invoice_map[inv_id]
@@ -162,6 +190,8 @@ async def batch_recognize_invoices(
                 inv.tax = data.get("tax")
                 inv.total = data.get("total")
                 inv.items = data.get("items")
+                # 校验模型返回的分类，不在启用分类列表中的统一设为“其他”
+                inv.category = _normalize_category(data.get("category"), category_names)
                 inv.status = "recognized"
                 inv.recognized_at = datetime.now(timezone.utc)
             else:

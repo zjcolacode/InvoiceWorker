@@ -50,6 +50,18 @@ export interface InvoiceStats {
   }>
 }
 
+export interface SkippedFile {
+  filename: string
+  reason: string
+  existing_id?: number | null
+}
+
+export interface InvoiceUploadResult {
+  uploaded: Invoice[]
+  skipped: SkippedFile[]
+  message: string
+}
+
 /**
  * 上传发票文件 (支持多文件)
  * @param files 文件数组
@@ -59,7 +71,7 @@ export function uploadInvoices(files: File[], sourceType: string) {
   const formData = new FormData()
   files.forEach((file) => formData.append('files', file))
   formData.append('source_type', sourceType)
-  return request.post<unknown, Invoice[]>('/invoices/upload', formData, {
+  return request.post<unknown, InvoiceUploadResult>('/api/invoices/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 120000,
   })
@@ -79,14 +91,14 @@ export function getInvoiceList(params: InvoiceListParams) {
     date_to: params.dateTo || undefined,
     keyword: params.keyword || undefined,
   }
-  return request.get<unknown, InvoiceListResult>('/invoices/', { params: query })
+  return request.get<unknown, InvoiceListResult>('/api/invoices/', { params: query })
 }
 
 /**
  * 获取发票详情
  */
 export function getInvoiceDetail(id: number) {
-  return request.get<unknown, Invoice>(`/invoices/${id}`)
+  return request.get<unknown, Invoice>(`/api/invoices/${id}`)
 }
 
 /**
@@ -94,7 +106,7 @@ export function getInvoiceDetail(id: number) {
  */
 export function deleteInvoice(id: number) {
   return request.delete<unknown, { success: boolean; id: number; file_deleted: boolean }>(
-    `/invoices/${id}`,
+    `/api/invoices/${id}`,
   )
 }
 
@@ -102,14 +114,26 @@ export function deleteInvoice(id: number) {
  * 获取统计摘要
  */
 export function getInvoiceStats() {
-  return request.get<unknown, InvoiceStats>('/invoices/stats/summary')
+  return request.get<unknown, InvoiceStats>('/api/invoices/stats/summary')
 }
 
 /**
- * 触发发票识别
+ * 触发发票识别（AI识别耗时较长，设置120秒超时）
  */
 export function recognizeInvoice(id: number) {
   return request.post<unknown, { success: boolean; data?: unknown; error?: string }>(
-    `/recognition/recognize/${id}`,
+    `/api/recognition/recognize/${id}`,
+    undefined,
+    { timeout: 120000 },
+  )
+}
+
+/**
+ * 更新发票分类
+ */
+export function updateInvoiceCategory(id: number, category: string) {
+  return request.patch<unknown, { success: boolean; id: number; category: string | null }>(
+    `/api/invoices/${id}/category`,
+    { category },
   )
 }

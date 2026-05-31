@@ -131,8 +131,28 @@ async function handleSubmit() {
   uploading.value = true
   try {
     const res = await uploadInvoices(realFiles, sourceType.value)
-    ElMessage.success(`成功上传 ${res.length} 张发票`)
-    emit('success')
+    const uploadedCount = res?.uploaded?.length ?? 0
+    const skipped = res?.skipped ?? []
+
+    if (uploadedCount > 0 && skipped.length === 0) {
+      ElMessage.success(res?.message || `成功上传 ${uploadedCount} 个文件`)
+    } else if (uploadedCount > 0 && skipped.length > 0) {
+      ElMessage.warning(
+        `${res?.message || `成功上传 ${uploadedCount} 个文件，跳过 ${skipped.length} 个重复文件`}\n` +
+          skipped.map((s) => `· ${s.filename}：${s.reason}`).join('\n'),
+      )
+    } else if (uploadedCount === 0 && skipped.length > 0) {
+      ElMessage.warning(
+        `所有文件均为重复文件，未上传。\n` +
+          skipped.map((s) => `· ${s.filename}：${s.reason}`).join('\n'),
+      )
+    } else {
+      ElMessage.info(res?.message || '未上传任何文件')
+    }
+
+    if (uploadedCount > 0) {
+      emit('success')
+    }
     handleClose()
   } catch (e) {
     // 错误已在拦截器中提示
