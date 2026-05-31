@@ -51,6 +51,20 @@ export const useUserStore = defineStore('user', () => {
     return roles.includes(userInfo.value.role as Role)
   }
 
+  /**
+   * Menu access gate.
+   * - admin → 始终放行（忽略 menu_permissions）
+   * - 其他角色 → 仅当 path 包含在 menu_permissions 中才放行；
+   *   若 menu_permissions 为空或 null → 一律拒绝
+   */
+  function canAccessMenu(path: string): boolean {
+    if (!userInfo.value) return false
+    if (userInfo.value.role === 'admin') return true
+    const perms = userInfo.value.menu_permissions
+    if (!perms || perms.length === 0) return false
+    return perms.includes(path)
+  }
+
   return {
     token,
     userInfo,
@@ -62,5 +76,6 @@ export const useUserStore = defineStore('user', () => {
     logout,
     getUserInfo,
     hasRole,
+    canAccessMenu,
   }
 })

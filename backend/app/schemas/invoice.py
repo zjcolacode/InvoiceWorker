@@ -56,6 +56,7 @@ class InvoiceResponse(BaseModel):
     recognized_at: Optional[datetime] = None
     status: str
     user_id: Optional[int] = None
+    uploader_username: Optional[str] = None  # 仅 admin 视角列表展示用，非数据库字段
     created_at: Optional[datetime] = None
 
     class Config:

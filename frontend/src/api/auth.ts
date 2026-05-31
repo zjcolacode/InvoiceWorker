@@ -8,6 +8,8 @@ export interface UserInfo {
   email: string
   role: Role
   is_active: boolean
+  menu_permissions?: string[] | null
+  created_at?: string | null
 }
 
 export interface LoginResponse {

@@ -17,6 +17,8 @@ export interface Invoice {
   recognized_at?: string | null
   status: string
   user_id?: number | null
+  /** 上传者用户名（仅 admin 查看列表时返回） */
+  uploader_username?: string | null
   created_at?: string | null
 }
 
@@ -29,6 +31,8 @@ export interface InvoiceListParams {
   dateFrom?: string
   dateTo?: string
   keyword?: string
+  /** 仅 admin 可用：按上传者 user_id 过滤 */
+  ownerUserId?: number | null
 }
 
 export interface InvoiceListResult {
@@ -90,6 +94,7 @@ export function getInvoiceList(params: InvoiceListParams) {
     date_from: params.dateFrom || undefined,
     date_to: params.dateTo || undefined,
     keyword: params.keyword || undefined,
+    owner_user_id: params.ownerUserId ?? undefined,
   }
   return request.get<unknown, InvoiceListResult>('/api/invoices/', { params: query })
 }

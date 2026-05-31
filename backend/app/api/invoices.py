@@ -34,6 +34,21 @@ ALLOWED_ROLES = ["admin", "user", "operator", "manager"]
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
 
+def _is_admin(user: User) -> bool:
+    return (user.role or "").lower() == "admin"
+
+
+def _ensure_invoice_owner(invoice: Invoice, user: User) -> None:
+    """非 admin 仅能操作自己上传/导入的发票"""
+    if _is_admin(user):
+        return
+    if invoice.user_id is None or invoice.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="无权操作他人的发票",
+        )
+
+
 @router.post("/upload", response_model=InvoiceUploadResult)
 async def upload_invoices(
     files: List[UploadFile] = File(..., description="发票文件,支持多文件"),
@@ -216,11 +231,22 @@ async def list_invoices(
     date_from: Optional[str] = Query(None, description="开票日期起"),
     date_to: Optional[str] = Query(None, description="开票日期止"),
     keyword: Optional[str] = Query(None, description="关键词:销售方/购买方/明细"),
+    owner_user_id: Optional[int] = Query(None, description="仅 admin 可用：按上传者用户ID过滤"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(ALLOWED_ROLES)),
 ):
-    """获取发票列表(分页+筛选+搜索)"""
+    """获取发票列表(分页+筛选+搜索)
+
+    - 非 admin 只能看到自己的发票（user_id == current_user.id）
+    - admin 默认看到所有发票，可通过 owner_user_id 参数进一步过滤
+    """
     query = db.query(Invoice)
+
+    # 用户隔离：非 admin 强制只查看本人发票
+    if not _is_admin(current_user):
+        query = query.filter(Invoice.user_id == current_user.id)
+    elif owner_user_id is not None:
+        query = query.filter(Invoice.user_id == owner_user_id)
 
     if category:
         query = query.filter(Invoice.category == category)
@@ -249,11 +275,27 @@ async def list_invoices(
         .all()
     )
 
+    # admin 视角需展示上传者：批量加载用户名避免 N+1
+    user_id_set = {inv.user_id for inv in items if inv.user_id is not None}
+    user_map: dict = {}
+    if _is_admin(current_user) and user_id_set:
+        users = db.query(User).filter(User.id.in_(user_id_set)).all()
+        user_map = {u.id: u.username for u in users}
+
+    item_dicts = []
+    for inv in items:
+        d = InvoiceResponse.model_validate(inv).model_dump()
+        if _is_admin(current_user):
+            d["uploader_username"] = user_map.get(inv.user_id)
+        else:
+            d["uploader_username"] = None
+        item_dicts.append(d)
+
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
-        "items": [InvoiceResponse.model_validate(i).model_dump() for i in items],
+        "items": item_dicts,
     }
 
 
@@ -262,26 +304,33 @@ async def get_stats_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(ALLOWED_ROLES)),
 ):
-    """统计摘要: 本月发票总数/总金额, 各分类占比"""
+    """统计摘要: 本月发票总数/总金额, 各分类占比
+
+    非 admin 仅统计本人的发票。
+    """
     now = datetime.now()
     month_prefix = now.strftime("%Y-%m")
 
     # 本月发票 (按 invoice_date 前缀匹配; 若 invoice_date 为空则不计入)
     month_query = db.query(Invoice).filter(Invoice.invoice_date.like(f"{month_prefix}%"))
-    month_count = month_query.count()
-    month_total = (
+    month_total_query = (
         db.query(func.coalesce(func.sum(Invoice.total), 0.0))
         .filter(Invoice.invoice_date.like(f"{month_prefix}%"))
-        .scalar()
-        or 0.0
+    )
+    cat_query = db.query(
+        Invoice.category, func.count(Invoice.id), func.coalesce(func.sum(Invoice.total), 0.0)
     )
 
-    # 各分类占比 (全局)
-    category_rows = (
-        db.query(Invoice.category, func.count(Invoice.id), func.coalesce(func.sum(Invoice.total), 0.0))
-        .group_by(Invoice.category)
-        .all()
-    )
+    if not _is_admin(current_user):
+        month_query = month_query.filter(Invoice.user_id == current_user.id)
+        month_total_query = month_total_query.filter(Invoice.user_id == current_user.id)
+        cat_query = cat_query.filter(Invoice.user_id == current_user.id)
+
+    month_count = month_query.count()
+    month_total = month_total_query.scalar() or 0.0
+
+    # 各分类占比
+    category_rows = cat_query.group_by(Invoice.category).all()
     total_count = sum(r[1] for r in category_rows) or 1
     categories = [
         {
@@ -314,6 +363,7 @@ async def get_invoice(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"发票不存在: id={invoice_id}",
         )
+    _ensure_invoice_owner(invoice, current_user)
     return invoice
 
 
@@ -331,6 +381,7 @@ async def update_invoice_category(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"发票不存在: id={invoice_id}",
         )
+    _ensure_invoice_owner(invoice, current_user)
 
     new_category = (category or "").strip() or None
     invoice.category = new_category
@@ -356,6 +407,7 @@ async def delete_invoice(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"发票不存在: id={invoice_id}",
         )
+    _ensure_invoice_owner(invoice, current_user)
 
     file_path = invoice.file_path
     db.delete(invoice)

@@ -116,12 +116,17 @@ def _filter_invoices(
     month: int,
     category: Optional[str] = None,
     source_type: Optional[str] = None,
+    user_id: Optional[int] = None,
 ) -> List[Invoice]:
     """按条件加载发票，并按 invoice_date 升序排序。
 
     invoice_date 是字符串字段，先在数据库做 LIKE 粗筛，再在内存按解析后的日期精筛。
+
+    user_id 不为 None 时限定只返回该用户上传/导入的发票（用于非 admin 隔离）。
     """
     q = db.query(Invoice)
+    if user_id is not None:
+        q = q.filter(Invoice.user_id == user_id)
     if category:
         q = q.filter(Invoice.category == category)
     if source_type:
@@ -135,7 +140,11 @@ def _filter_invoices(
     for inv in rows:
         d = _parse_invoice_date(inv.invoice_date)
         if d is None:
-            # 日期无法解析的发票跳过(避免错入其它月份)
+            # 日期无法解析时，用 created_at（上传时间）作为兜底日期判断月份归属
+            if inv.created_at:
+                fallback = inv.created_at if isinstance(inv.created_at, datetime) else datetime.fromisoformat(str(inv.created_at))
+                if fallback.year == target_year and fallback.month == target_month:
+                    result.append((fallback, inv))
             continue
         if d.year == target_year and d.month == target_month:
             result.append((d, inv))
@@ -260,12 +269,13 @@ class ExcelExporter:
         month: int,
         category: Optional[str] = None,
         source_type: Optional[str] = None,
+        user_id: Optional[int] = None,
     ) -> Tuple[str, int]:
         """月度汇总表：按日期汇总每天的发票数量与金额。
 
         :return: (输出文件绝对路径, 涉及发票数量)
         """
-        invoices = _filter_invoices(db, year, month, category, source_type)
+        invoices = _filter_invoices(db, year, month, category, source_type, user_id=user_id)
         wb = Workbook()
         ws = wb.active
         ws.title = "月度汇总"
@@ -357,9 +367,10 @@ class ExcelExporter:
         month: int,
         category: Optional[str] = None,
         source_type: Optional[str] = None,
+        user_id: Optional[int] = None,
     ) -> Tuple[str, int]:
         """分类汇总表：按分类汇总。"""
-        invoices = _filter_invoices(db, year, month, category, source_type)
+        invoices = _filter_invoices(db, year, month, category, source_type, user_id=user_id)
         wb = Workbook()
         ws = wb.active
         ws.title = "分类汇总"
@@ -460,9 +471,10 @@ class ExcelExporter:
         month: int,
         category: Optional[str] = None,
         source_type: Optional[str] = None,
+        user_id: Optional[int] = None,
     ) -> Tuple[str, int]:
         """明细表：所有发票详细信息。"""
-        invoices = _filter_invoices(db, year, month, category, source_type)
+        invoices = _filter_invoices(db, year, month, category, source_type, user_id=user_id)
         wb = Workbook()
         ws = wb.active
         ws.title = "发票明细"

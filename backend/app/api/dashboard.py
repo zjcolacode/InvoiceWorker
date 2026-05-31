@@ -48,49 +48,67 @@ async def get_dashboard_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取仪表盘统计数据"""
+    """获取仪表盘统计数据
+
+    非 admin 仅统计本人上传/导入的发票。
+    """
+    is_admin = (current_user.role or "").lower() == "admin"
     now = datetime.now()
     month_pref = _month_prefix(now)
     month_like = f"{month_pref}%"
 
+    def _scoped(query):
+        """非 admin 追加 user_id 过滤"""
+        if not is_admin:
+            query = query.filter(Invoice.user_id == current_user.id)
+        return query
+
     # 本月发票总数(按 invoice_date 前缀; invoice_date 为空的不计入本月)
     total_invoices = (
-        db.query(func.count(Invoice.id))
-        .filter(Invoice.invoice_date.like(month_like))
+        _scoped(
+            db.query(func.count(Invoice.id)).filter(Invoice.invoice_date.like(month_like))
+        )
         .scalar()
         or 0
     )
 
     # 本月总金额
     total_amount = (
-        db.query(func.coalesce(func.sum(Invoice.total), 0.0))
-        .filter(Invoice.invoice_date.like(month_like))
+        _scoped(
+            db.query(func.coalesce(func.sum(Invoice.total), 0.0)).filter(
+                Invoice.invoice_date.like(month_like)
+            )
+        )
         .scalar()
         or 0.0
     )
 
-    # 待识别(全局 status=pending)
+    # 待识别
     pending_count = (
-        db.query(func.count(Invoice.id))
-        .filter(Invoice.status == "pending")
+        _scoped(db.query(func.count(Invoice.id)).filter(Invoice.status == "pending"))
         .scalar()
         or 0
     )
 
-    # 已识别(全局 status in ('recognized','verified'))
+    # 已识别
     recognized_count = (
-        db.query(func.count(Invoice.id))
-        .filter(Invoice.status.in_(["recognized", "verified"]))
+        _scoped(
+            db.query(func.count(Invoice.id)).filter(
+                Invoice.status.in_(["recognized", "verified"])
+            )
+        )
         .scalar()
         or 0
     )
 
-    # 分类分布(全局, group by category)
+    # 分类分布(group by category)
     cat_rows = (
-        db.query(
-            Invoice.category,
-            func.count(Invoice.id),
-            func.coalesce(func.sum(Invoice.total), 0.0),
+        _scoped(
+            db.query(
+                Invoice.category,
+                func.count(Invoice.id),
+                func.coalesce(func.sum(Invoice.total), 0.0),
+            )
         )
         .group_by(Invoice.category)
         .all()
@@ -108,14 +126,16 @@ async def get_dashboard_stats(
     months = _last_n_months(6)
     trend_map = {m: {"count": 0, "amount": 0.0} for m in months}
     trend_rows = (
-        db.query(
-            func.substr(Invoice.invoice_date, 1, 7).label("ym"),
-            func.count(Invoice.id),
-            func.coalesce(func.sum(Invoice.total), 0.0),
+        _scoped(
+            db.query(
+                func.substr(Invoice.invoice_date, 1, 7).label("ym"),
+                func.count(Invoice.id),
+                func.coalesce(func.sum(Invoice.total), 0.0),
+            )
+            .filter(Invoice.invoice_date.isnot(None))
+            .filter(Invoice.invoice_date != "")
+            .filter(func.substr(Invoice.invoice_date, 1, 7).in_(months))
         )
-        .filter(Invoice.invoice_date.isnot(None))
-        .filter(Invoice.invoice_date != "")
-        .filter(func.substr(Invoice.invoice_date, 1, 7).in_(months))
         .group_by("ym")
         .all()
     )
@@ -129,7 +149,10 @@ async def get_dashboard_stats(
 
     # 最近10条发票(按 created_at 倒序)
     recent_rows = (
-        db.query(Invoice).order_by(Invoice.created_at.desc()).limit(10).all()
+        _scoped(db.query(Invoice))
+        .order_by(Invoice.created_at.desc())
+        .limit(10)
+        .all()
     )
     recent_invoices = [
         RecentInvoiceItem(

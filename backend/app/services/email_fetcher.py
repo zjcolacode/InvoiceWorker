@@ -21,7 +21,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.models.email_config import EmailConfig
 from app.models.email_fetch_log import EmailFetchLog
-from app.models.invoice import Invoice
+from app.models.email_message import EmailMessage
 from app.schemas.email_config import EmailTestRequest
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,19 @@ def _decode_str(value) -> str:
 
 
 _INVOICE_KEYWORDS = ("发票", "invoice", "fapiao")
+
+
+def _parse_email_date(date_str: str) -> Optional[datetime]:
+    """解析邮件 Date 头为 datetime（带时区，失败返回 None）"""
+    if not date_str:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(date_str)
+        return dt
+    except Exception:
+        return None
 
 
 def _is_invoice_attachment(filename: str) -> bool:
@@ -244,40 +257,67 @@ class EmailFetcherService:
             )
             client.select("INBOX")
 
+            # 使用UID SEARCH代替普通SEARCH，获取稳定的UID用于去重
             criteria = EmailFetcherService._build_search_criteria(config.last_check_at)
-            typ, data = client.search(None, criteria)
+            typ, data = client.uid("search", None, criteria)
             if typ != "OK":
                 raise RuntimeError(f"邮件搜索失败: {typ}")
 
-            ids = data[0].split() if data and data[0] else []
-            result["total_emails_checked"] = len(ids)
+            uids = data[0].split() if data and data[0] else []
+            result["total_emails_checked"] = len(uids)
             logger.info(
-                f"邮箱[{config.email_address}] 命中 {len(ids)} 封待处理邮件 (criteria={criteria})"
+                f"邮箱[{config.email_address}] 命中 {len(uids)} 封邮件 (criteria={criteria})"
+            )
+
+            # 查询已处理的UID集合用于去重
+            existing_uids = set(
+                row[0] for row in db.query(EmailMessage.message_uid).filter(
+                    EmailMessage.config_id == config_id,
+                    EmailMessage.message_uid.isnot(None),
+                ).all()
+            )
+            new_uids = [uid for uid in uids if uid.decode() not in existing_uids]
+            logger.info(
+                f"去重后需处理 {len(new_uids)} 封新邮件 (已存在 {len(uids) - len(new_uids)} 封)"
             )
 
             today = datetime.now().strftime("%Y-%m-%d")
-            target_dir = os.path.join(settings.PDF_STORAGE_PATH, today)
+            target_dir = os.path.join(settings.EMAIL_TEMP_PATH, today)
 
-            for num in ids:
+            for uid in new_uids:
                 try:
-                    typ, msg_data = client.fetch(num, "(RFC822)")
+                    typ, msg_data = client.uid("fetch", uid, "(RFC822)")
                     if typ != "OK" or not msg_data or not msg_data[0]:
                         continue
                     raw = msg_data[0][1]
                     msg = email_lib.message_from_bytes(raw)
+                    subject = _decode_str(msg.get("Subject", ""))
+                    sender = _decode_str(msg.get("From", ""))
+                    received_at = _parse_email_date(msg.get("Date", ""))
                     attachments = EmailFetcherService._process_message(msg, target_dir)
-                    for file_path, original_filename in attachments:
-                        invoice = Invoice(
-                            source_type="pdf",
-                            file_path=file_path,
-                            original_filename=original_filename or os.path.basename(file_path),
-                            status="pending",
-                            user_id=config.user_id,
-                        )
-                        db.add(invoice)
-                        result["new_invoices_found"] += 1
+                    uid_str = uid.decode()
+                    if attachments:
+                        for file_path, original_filename in attachments:
+                            try:
+                                file_size = os.path.getsize(file_path)
+                            except OSError:
+                                file_size = 0
+                            email_msg = EmailMessage(
+                                config_id=config_id,
+                                message_uid=uid_str,
+                                subject=subject[:500] if subject else None,
+                                sender=sender[:200] if sender else None,
+                                received_at=received_at,
+                                attachment_name=(original_filename or os.path.basename(file_path))[:300],
+                                attachment_path=file_path,
+                                file_size=file_size,
+                                is_imported=False,
+                                user_id=config.user_id,
+                            )
+                            db.add(email_msg)
+                            result["new_invoices_found"] += 1
                 except Exception as item_err:
-                    msg_err = f"邮件处理失败 num={num!r}: {item_err}"
+                    msg_err = f"邮件处理失败 uid={uid!r}: {item_err}"
                     logger.warning(msg_err)
                     result["errors"].append(msg_err)
 

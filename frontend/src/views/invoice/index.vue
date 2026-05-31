@@ -10,9 +10,6 @@
           <el-button @click="handleBatchRecognize" :disabled="!selectedIds.length">
             批量识别
           </el-button>
-          <el-button @click="showCategoryManage = true">
-            <el-icon><Collection /></el-icon> 分类管理
-          </el-button>
         </div>
         <div class="toolbar-right">
           <el-input
@@ -45,6 +42,22 @@
             <el-option label="待识别" value="pending" />
             <el-option label="已识别" value="recognized" />
             <el-option label="识别失败" value="failed" />
+          </el-select>
+          <el-select
+            v-if="isAdmin"
+            v-model="filters.owner_user_id"
+            placeholder="上传者"
+            clearable
+            filterable
+            style="width: 140px"
+            @change="loadData"
+          >
+            <el-option
+              v-for="u in userOptions"
+              :key="u.id"
+              :label="u.username"
+              :value="u.id"
+            />
           </el-select>
           <el-date-picker
             v-model="dateRange"
@@ -113,6 +126,17 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column
+          v-if="isAdmin"
+          prop="uploader_username"
+          label="上传者"
+          width="110"
+          show-overflow-tooltip
+        >
+          <template #default="{ row }">
+            <span>{{ row.uploader_username || '-' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="90" align="center">
           <template #default="{ row }">
             <el-tag :type="statusType(row.status)" size="small">
@@ -160,18 +184,6 @@
     <!-- 上传对话框 -->
     <UploadDialog v-model="showUpload" @success="loadData" />
 
-    <!-- 分类管理抽屉 -->
-    <el-drawer
-      v-model="showCategoryManage"
-      title="分类管理"
-      direction="rtl"
-      size="70%"
-      destroy-on-close
-      @close="loadCategories"
-    >
-      <CategoriesPanel />
-    </el-drawer>
-
     <!-- 详情对话框 -->
     <el-dialog v-model="detailVisible" title="发票详情" width="600px">
       <el-descriptions :column="2" border v-if="currentInvoice">
@@ -192,23 +204,30 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Upload, Search, Loading, Collection } from '@element-plus/icons-vue'
+import { Upload, Search, Loading } from '@element-plus/icons-vue'
 import { getInvoiceList, deleteInvoice, recognizeInvoice, updateInvoiceCategory } from '@/api/invoice'
 import type { Invoice } from '@/api/invoice'
 import { getCategories, type Category } from '@/api/category'
+import { getUsers } from '@/api/user'
+import type { UserInfo } from '@/api/auth'
 import { setSuppressErrorMessage } from '@/api/request'
+import { useUserStore } from '@/stores/user'
 import UploadDialog from './upload.vue'
-import CategoriesPanel from './categories.vue'
+
+// 当前用户
+const userStore = useUserStore()
+const isAdmin = computed(() => userStore.role === 'admin')
 
 // 上传对话框
 const showUpload = ref(false)
-// 分类管理抽屉
-const showCategoryManage = ref(false)
 
 // 分类选项
 const categoryOptions = ref<Category[]>([])
+
+// admin 专用：上传者选项
+const userOptions = ref<UserInfo[]>([])
 
 // 筛选
 const filters = reactive({
@@ -218,6 +237,7 @@ const filters = reactive({
   category: '',
   date_from: '',
   date_to: '',
+  owner_user_id: undefined as number | undefined,
 })
 const dateRange = ref<string[]>([])
 
@@ -246,6 +266,7 @@ async function loadData() {
       category: filters.category || undefined,
       dateFrom: filters.date_from || undefined,
       dateTo: filters.date_to || undefined,
+      ownerUserId: isAdmin.value ? filters.owner_user_id ?? undefined : undefined,
     })
     invoiceList.value = res.items
     pagination.total = res.total
@@ -429,6 +450,17 @@ async function loadCategories() {
   }
 }
 
+// admin 加载全部用户用于上传者筛选
+async function loadUsersForAdmin() {
+  if (!isAdmin.value) return
+  try {
+    const res = await getUsers({ page: 1, page_size: 200 })
+    userOptions.value = res.items
+  } catch (e) {
+    console.error('加载用户列表失败', e)
+  }
+}
+
 // 发票分类变更
 async function handleCategoryChange(row: Invoice) {
   try {
@@ -443,6 +475,7 @@ async function handleCategoryChange(row: Invoice) {
 
 onMounted(() => {
   loadCategories()
+  loadUsersForAdmin()
   loadData()
 })
 </script>

@@ -131,6 +131,18 @@ async def generate_print_pdf(
             detail="未找到任何发票记录",
         )
 
+    # 用户隔离：非 admin 不允许打印他人上传的发票
+    if (current_user.role or "").lower() != "admin":
+        not_owned = [
+            inv.id for inv in invoices
+            if inv.user_id is None or inv.user_id != current_user.id
+        ]
+        if not_owned:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"无权打印他人的发票 (ids: {not_owned})",
+            )
+
     # 按用户传入顺序排列
     id_order = {inv_id: idx for idx, inv_id in enumerate(payload.invoice_ids)}
     invoices.sort(key=lambda inv: id_order.get(inv.id, 9999))

@@ -45,7 +45,7 @@
       </el-col>
       <el-col :xs="12" :sm="6">
         <el-card shadow="hover" class="metric-card">
-          <div class="metric-card__label">今日新增发票</div>
+          <div class="metric-card__label">今日拉取邮件</div>
           <div class="metric-card__value">{{ todayHarvest }}</div>
         </el-card>
       </el-col>
@@ -144,6 +144,131 @@
           </template>
         </el-table-column>
       </el-table>
+    </el-card>
+
+    <!-- 拉取的邮件列表 -->
+    <el-card shadow="never" class="section-card">
+      <template #header>
+        <div class="card-header">
+          <span class="card-header__title">拉取的邮件</span>
+          <div class="card-header__actions">
+            <el-radio-group
+              v-model="messageFilter"
+              size="small"
+              @change="onFilterChange"
+            >
+              <el-radio-button value="pending">待导入</el-radio-button>
+              <el-radio-button value="imported">已导入</el-radio-button>
+              <el-radio-button value="all">全部</el-radio-button>
+            </el-radio-group>
+            <el-button :icon="Refresh" @click="loadMessages" :loading="messagesLoading">
+              刷新
+            </el-button>
+            <el-button
+              type="primary"
+              :disabled="selectedMessageIds.length === 0 || importing"
+              :loading="importing"
+              @click="handleImport"
+            >
+              导入选中 ({{ selectedMessageIds.length }})
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <el-table
+        ref="messageTableRef"
+        v-loading="messagesLoading"
+        :data="messages"
+        empty-text="暂无拉取到的邮件"
+        stripe
+        style="width: 100%"
+        @selection-change="handleMessageSelect"
+      >
+        <el-table-column
+          type="selection"
+          width="50"
+          :selectable="(row: EmailMessageItem) => !row.is_imported"
+        />
+        <el-table-column
+          label="邮件主题"
+          prop="subject"
+          min-width="220"
+          show-overflow-tooltip
+        >
+          <template #default="{ row }">
+            <span v-if="row.subject">{{ row.subject }}</span>
+            <span v-else class="text-mute">(无主题)</span>
+          </template>
+        </el-table-column>
+        <el-table-column
+          label="发件人"
+          prop="sender"
+          width="200"
+          show-overflow-tooltip
+        >
+          <template #default="{ row }">
+            <span v-if="row.sender">{{ row.sender }}</span>
+            <span v-else class="text-mute">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column
+          label="附件名"
+          prop="attachment_name"
+          min-width="200"
+          show-overflow-tooltip
+        >
+          <template #default="{ row }">
+            <span v-if="row.attachment_name">{{ row.attachment_name }}</span>
+            <span v-else class="text-mute">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="大小" width="100" align="right">
+          <template #default="{ row }">{{ formatFileSize(row.file_size) }}</template>
+        </el-table-column>
+        <el-table-column label="收件时间" width="170">
+          <template #default="{ row }">
+            <span v-if="row.received_at">
+              {{ formatDate(row.received_at, 'YYYY-MM-DD HH:mm') }}
+            </span>
+            <span v-else class="text-mute">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag
+              :type="row.is_imported ? 'success' : 'info'"
+              size="small"
+              effect="plain"
+            >
+              {{ row.is_imported ? '已导入' : '待导入' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="100" align="right" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              type="danger"
+              link
+              size="small"
+              @click="handleDeleteMessage(row as EmailMessageItem)"
+            >
+              删除
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div class="pager">
+        <el-pagination
+          background
+          layout="prev, pager, next, total"
+          :current-page="messagePage"
+          :page-size="messagePageSize"
+          :total="messageTotal"
+          @current-change="onMessagePageChange"
+        />
+      </div>
     </el-card>
 
     <!-- 拉取日志 -->
@@ -325,13 +450,18 @@ import { Plus, Refresh } from '@element-plus/icons-vue'
 import {
   createEmailConfig,
   deleteEmailConfig,
+  deleteEmailMessage,
   getEmailConfigs,
+  getEmailMessages,
   getFetchLogs,
+  importEmailMessages,
   manualFetch,
   testConnection,
   updateEmailConfig,
   type EmailConfigItem,
   type EmailFetchLogItem,
+  type EmailMessageItem,
+  type EmailMessagePage,
   type EmailTestResult,
 } from '@/api/email'
 import { formatDate } from '@/utils'
@@ -346,6 +476,16 @@ const logTotal = ref(0)
 const logPage = ref(1)
 const logPageSize = ref(10)
 const logLoading = ref(false)
+
+/* 拉取的邮件列表 */
+const messages = ref<EmailMessageItem[]>([])
+const messageTotal = ref(0)
+const messagePage = ref(1)
+const messagePageSize = ref(10)
+const messagesLoading = ref(false)
+const messageFilter = ref<'pending' | 'imported' | 'all'>('pending')
+const selectedMessageIds = ref<number[]>([])
+const importing = ref(false)
 
 const dialogVisible = ref(false)
 const editing = ref(false)
@@ -440,6 +580,15 @@ function statusTagType(s: string): 'success' | 'warning' | 'danger' | 'info' {
   return 'info'
 }
 
+function formatFileSize(bytes: number | null | undefined): string {
+  const n = Number(bytes ?? 0)
+  if (!n || n <= 0) return '—'
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
 /* ------------------------- data loaders ------------------------- */
 async function loadConfigs() {
   loading.value = true
@@ -472,6 +621,90 @@ async function loadLogs() {
 function onLogPageChange(p: number) {
   logPage.value = p
   loadLogs()
+}
+
+/* 拉取邮件列表加载 / 勾选 / 导入 / 删除 */
+async function loadMessages() {
+  messagesLoading.value = true
+  try {
+    const isImported =
+      messageFilter.value === 'all' ? undefined : messageFilter.value === 'imported'
+    const data = (await getEmailMessages({
+      page: messagePage.value,
+      pageSize: messagePageSize.value,
+      isImported,
+    })) as unknown as EmailMessagePage
+    messages.value = data?.items || []
+    messageTotal.value = data?.total || 0
+  } catch {
+    /* swallow */
+  } finally {
+    messagesLoading.value = false
+  }
+}
+
+function onFilterChange() {
+  messagePage.value = 1
+  selectedMessageIds.value = []
+  loadMessages()
+}
+
+function onMessagePageChange(p: number) {
+  messagePage.value = p
+  loadMessages()
+}
+
+function handleMessageSelect(rows: EmailMessageItem[]) {
+  selectedMessageIds.value = rows.filter((r) => !r.is_imported).map((r) => r.id)
+}
+
+async function handleImport() {
+  if (selectedMessageIds.value.length === 0) return
+  importing.value = true
+  try {
+    const res = (await importEmailMessages(
+      selectedMessageIds.value,
+    )) as unknown as {
+      success: boolean
+      imported_count: number
+      skipped_count: number
+      requested: number
+    }
+    if (res?.skipped_count) {
+      ElMessage.warning(
+        `导入完成 · 成功 ${res.imported_count} 张 · 跳过 ${res.skipped_count} 张`,
+      )
+    } else {
+      ElMessage.success(`已导入 ${res?.imported_count ?? 0} 张发票`)
+    }
+    selectedMessageIds.value = []
+    await loadMessages()
+  } catch {
+    /* swallow */
+  } finally {
+    importing.value = false
+  }
+}
+
+async function handleDeleteMessage(row: EmailMessageItem) {
+  try {
+    await ElMessageBox.confirm(
+      row.is_imported
+        ? `该邮件已导入发票管理，删除后仅移除拉取记录，不影响已导入的发票。是否继续？`
+        : `确认删除该邮件记录？未导入的附件临时文件也将被删除。`,
+      '删除确认',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteEmailMessage(row.id)
+    ElMessage.success('已删除')
+    await loadMessages()
+  } catch {
+    /* swallow */
+  }
 }
 
 /* ------------------------- form actions ------------------------- */
@@ -612,10 +845,13 @@ async function handleFetch(row: EmailConfigItem) {
       ElMessage.error(`拉取失败：${res.errors?.[0] || '未知错误'}`)
     } else {
       ElMessage.success(
-        `拉取完成 · 检索 ${res.total_emails_checked} 封 · 新增 ${res.new_invoices_found} 张发票`,
+        `拉取完成 · 检索 ${res.total_emails_checked} 封 · 新增邮件附件 ${res.new_invoices_found} 份`,
       )
     }
-    await Promise.all([loadConfigs(), loadLogs()])
+    messagePage.value = 1
+    messageFilter.value = 'pending'
+    selectedMessageIds.value = []
+    await Promise.all([loadConfigs(), loadLogs(), loadMessages()])
   } catch {
     /* swallow */
   } finally {
@@ -627,6 +863,7 @@ async function handleFetch(row: EmailConfigItem) {
 onMounted(() => {
   loadConfigs()
   loadLogs()
+  loadMessages()
 })
 </script>
 
@@ -685,6 +922,13 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.card-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .card-header__title {

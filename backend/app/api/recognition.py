@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _is_admin(user: User) -> bool:
+    return (user.role or "").lower() == "admin"
+
+
 def _get_active_category_names(db: Session) -> list[str]:
     """获取数据库中启用状态的分类名称列表"""
     rows = (
@@ -63,6 +67,15 @@ async def recognize_single_invoice(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"发票记录不存在: id={invoice_id}",
+        )
+
+    # 用户隔离：非 admin 只能识别自己的发票
+    if not _is_admin(current_user) and (
+        invoice.user_id is None or invoice.user_id != current_user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="无权操作他人的发票",
         )
 
     # 检查文件路径
@@ -131,16 +144,16 @@ async def batch_recognize_invoices(
         )
 
     # 查询所有发票记录
-    invoices = (
-        db.query(Invoice)
-        .filter(Invoice.id.in_(request.invoice_ids))
-        .all()
-    )
+    invoice_query = db.query(Invoice).filter(Invoice.id.in_(request.invoice_ids))
+    # 用户隔离：非 admin 只会拿到自己的发票
+    if not _is_admin(current_user):
+        invoice_query = invoice_query.filter(Invoice.user_id == current_user.id)
+    invoices = invoice_query.all()
 
     if not invoices:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="未找到任何匹配的发票记录",
+            detail="未找到任何可识别的发票记录（如识别他人的发票请联系管理员）",
         )
 
     # 构建id到invoice的映射

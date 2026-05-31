@@ -52,6 +52,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/users/index.vue'),
         meta: { title: '用户管理', icon: 'User', roles: ['admin'] },
       },
+      {
+        path: 'categories',
+        name: 'Categories',
+        component: () => import('@/views/categories/index.vue'),
+        meta: { title: '分类管理', icon: 'Collection', roles: ['admin', 'operator'] },
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/login' },
@@ -101,6 +107,27 @@ router.beforeEach(async (to, _from, next) => {
   if (roles && roles.length > 0 && !store.hasRole(roles)) {
     ElMessage.warning('您没有权限访问该页面')
     return next('/dashboard')
+  }
+
+  // 菜单权限拦截：访问需要登录的页面时，检查是否在用户菜单权限内
+  // admin 忽略；路由路径以 / 开头且存在于带鉴权的主布局下
+  if (requiresAuth && store.userInfo && to.path !== '/dashboard' && to.path !== '/') {
+    const normalized = to.path.replace(/\/$/, '') || to.path
+    // 仅对主布局下的顶级菜单项验证（避免影响嵌套子路由）
+    const topLevel = '/' + normalized.split('/').filter(Boolean)[0]
+    const knownMenuPaths = [
+      '/dashboard',
+      '/invoice',
+      '/email-config',
+      '/export',
+      '/print',
+      '/users',
+      '/categories',
+    ]
+    if (knownMenuPaths.includes(topLevel) && !store.canAccessMenu(topLevel)) {
+      ElMessage.warning('您没有权限访问该菜单')
+      return next('/dashboard')
+    }
   }
 
   next()

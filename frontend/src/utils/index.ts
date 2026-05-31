@@ -6,7 +6,12 @@
  * 格式化日期
  */
 export function formatDate(date: Date | string, format = 'YYYY-MM-DD'): string {
-  const d = new Date(date)
+  let dateStr = typeof date === 'string' ? date : ''
+  // SQLite CURRENT_TIMESTAMP 存储的是 UTC，如果无时区后缀则添加 'Z' 确保正确转换为本地时间
+  if (typeof date === 'string' && date && !date.includes('Z') && !date.includes('+')) {
+    dateStr = date.replace(' ', 'T') + 'Z'
+  }
+  const d = typeof date === 'string' ? new Date(dateStr) : new Date(date)
   const year = d.getFullYear()
   const month = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')

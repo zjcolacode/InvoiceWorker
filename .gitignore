@@ -44,3 +44,4 @@ Thumbs.db
 
 # Logs
 *.log
+backend/storage/email_temp/

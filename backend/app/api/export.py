@@ -87,8 +87,15 @@ async def generate_export(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(ALLOWED_ROLES)),
 ):
-    """生成 Excel 导出文件"""
+    """生成 Excel 导出文件
+
+    非 admin 只能导出本人上传/导入的发票。
+    """
     exporter = ExcelExporter()
+    # 非 admin 仅限本人发票
+    user_filter_id = (
+        None if (current_user.role or "").lower() == "admin" else current_user.id
+    )
     try:
         if payload.mode == ExportMode.monthly_summary:
             out_path, count = exporter.export_monthly_summary(
@@ -97,6 +104,7 @@ async def generate_export(
                 month=payload.month,
                 category=payload.category,
                 source_type=payload.source_type,
+                user_id=user_filter_id,
             )
         elif payload.mode == ExportMode.category_summary:
             out_path, count = exporter.export_category_summary(
@@ -105,6 +113,7 @@ async def generate_export(
                 month=payload.month,
                 category=payload.category,
                 source_type=payload.source_type,
+                user_id=user_filter_id,
             )
         else:
             out_path, count = exporter.export_detail(
@@ -113,6 +122,7 @@ async def generate_export(
                 month=payload.month,
                 category=payload.category,
                 source_type=payload.source_type,
+                user_id=user_filter_id,
             )
     except Exception as e:
         logger.exception("生成导出文件失败")

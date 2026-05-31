@@ -80,6 +80,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import {
   ArrowDown,
+  Collection,
   Document,
   Download,
   Expand,
@@ -112,9 +113,14 @@ const allMenus: MenuItem[] = [
   { path: '/export', title: '数据导出', icon: Download },
   { path: '/print', title: '打印管理', icon: Printer },
   { path: '/users', title: '用户管理', icon: User, roles: ['admin'] },
+  { path: '/categories', title: '分类管理', icon: Collection, roles: ['admin', 'operator'] },
 ]
 
-const visibleMenus = computed(() => allMenus.filter((m) => store.hasRole(m.roles)))
+// admin 看到全量菜单；其他角色仅看到被分配的菜单
+// 同时保留路由 meta.roles 判断作为二重保障
+const visibleMenus = computed(() =>
+  allMenus.filter((m) => store.hasRole(m.roles) && store.canAccessMenu(m.path)),
+)
 const activeMenu = computed(() => route.path)
 const currentTitle = computed(() => (route.meta?.title as string) || '—')
 

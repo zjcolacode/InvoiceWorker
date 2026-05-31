@@ -90,3 +90,26 @@ export async function fetchPrintBlob(filename: string, mode: 'preview' | 'downlo
   }
   return await res.blob()
 }
+
+/**
+ * 触发浏览器下载打印PDF (自动附带 token)
+ */
+export async function downloadPrintFile(filename: string): Promise<void> {
+  const blob = await fetchPrintBlob(filename, 'download')
+  const objectUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objectUrl
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+}
+
+/**
+ * 获取预览 Blob 的 ObjectURL (供 <iframe> 使用)
+ */
+export async function getPreviewObjectUrl(filename: string): Promise<string> {
+  const blob = await fetchPrintBlob(filename, 'preview')
+  return URL.createObjectURL(blob)
+}

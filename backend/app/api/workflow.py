@@ -51,10 +51,11 @@ ADMIN_ROLES = ["admin"]
 class _WorkflowRuntime:
     """单个流程的运行时状态"""
 
-    def __init__(self, task_id: int, options: WorkflowStartRequest, user_id: Optional[int]):
+    def __init__(self, task_id: int, options: WorkflowStartRequest, user_id: Optional[int], is_admin: bool = False):
         self.task_id = task_id
         self.options = options
         self.user_id = user_id
+        self.is_admin = is_admin
         self.status: str = "processing"
         self.current_step: str = ""
         self.progress: int = 0
@@ -226,7 +227,11 @@ async def _step_recognize(rt: _WorkflowRuntime) -> None:
     failed = 0
     errors: List[str] = []
     try:
-        pendings = db.query(Invoice).filter(Invoice.status == "pending").all()
+        pending_query = db.query(Invoice).filter(Invoice.status == "pending")
+        # 用户隔离：非 admin 仅识别本人发票（user_id == rt.user_id）
+        if rt.user_id is not None and not rt.is_admin:
+            pending_query = pending_query.filter(Invoice.user_id == rt.user_id)
+        pendings = pending_query.all()
         total = len(pendings)
         for idx, inv in enumerate(pendings, 1):
             if rt.cancelled:
@@ -289,17 +294,22 @@ async def _step_recognize(rt: _WorkflowRuntime) -> None:
         db.close()
 
 
-def _do_classify_sync() -> Dict[str, Any]:
-    """对已识别但未分类的发票执行批量分类"""
+def _do_classify_sync(user_id: Optional[int], is_admin: bool) -> Dict[str, Any]:
+    """对已识别但未分类的发票执行批量分类
+
+    非 admin 仅处理本人发票。
+    """
     db: Session = SessionLocal()
     try:
         # 找出已识别且未分类的发票ID
-        rows = (
+        rows_query = (
             db.query(Invoice.id)
             .filter(Invoice.status.in_(["recognized", "verified"]))
             .filter((Invoice.category.is_(None)) | (Invoice.category == ""))
-            .all()
         )
+        if user_id is not None and not is_admin:
+            rows_query = rows_query.filter(Invoice.user_id == user_id)
+        rows = rows_query.all()
         ids = [r[0] for r in rows]
         if not ids:
             return {"total": 0, "updated": 0, "skipped": 0}
@@ -311,7 +321,7 @@ def _do_classify_sync() -> Dict[str, Any]:
 async def _step_classify(rt: _WorkflowRuntime) -> None:
     rt.begin_step("classify")
     try:
-        res = await asyncio.to_thread(_do_classify_sync)
+        res = await asyncio.to_thread(_do_classify_sync, rt.user_id, rt.is_admin)
         text = f"待分类 {res['total']} 张, 更新 {res['updated']}, 跳过 {res['skipped']}"
         rt.finish_step("classify", ok=True, result=text)
     except Exception as exc:
@@ -319,20 +329,25 @@ async def _step_classify(rt: _WorkflowRuntime) -> None:
         rt.finish_step("classify", ok=False, error=str(exc))
 
 
-def _do_organize_sync() -> Dict[str, Any]:
-    """按开票日期重新归档已识别的发票文件"""
+def _do_organize_sync(user_id: Optional[int], is_admin: bool) -> Dict[str, Any]:
+    """按开票日期重新归档已识别的发票文件
+
+    非 admin 仅处理本人发票。
+    """
     db: Session = SessionLocal()
     moved = 0
     skipped = 0
     errors: List[str] = []
     try:
-        rows = (
+        rows_query = (
             db.query(Invoice)
             .filter(Invoice.invoice_date.isnot(None))
             .filter(Invoice.invoice_date != "")
             .filter(Invoice.file_path.isnot(None))
-            .all()
         )
+        if user_id is not None and not is_admin:
+            rows_query = rows_query.filter(Invoice.user_id == user_id)
+        rows = rows_query.all()
         for inv in rows:
             try:
                 new_path = organize_by_invoice_date(inv.file_path, inv.invoice_date)
@@ -353,7 +368,7 @@ def _do_organize_sync() -> Dict[str, Any]:
 async def _step_organize(rt: _WorkflowRuntime) -> None:
     rt.begin_step("organize")
     try:
-        res = await asyncio.to_thread(_do_organize_sync)
+        res = await asyncio.to_thread(_do_organize_sync, rt.user_id, rt.is_admin)
         text = f"已归档 {res['moved']} 张, 跳过 {res['skipped']}"
         rt.finish_step(
             "organize",
@@ -471,7 +486,12 @@ async def start_workflow(
     db.commit()
     db.refresh(task)
 
-    rt = _WorkflowRuntime(task.id, payload, current_user.id)
+    rt = _WorkflowRuntime(
+        task.id,
+        payload,
+        current_user.id,
+        is_admin=(current_user.role or "").lower() == "admin",
+    )
     _STATE[task.id] = rt
     rt.task = asyncio.create_task(_run_workflow(rt))
 

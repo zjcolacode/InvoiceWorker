@@ -37,9 +37,60 @@ def _ensure_invoice_file_hash_column() -> None:
         logger.warning(f"检查/补充 invoices.file_hash 列失败（可忽略）: {e}")
 
 
+def _ensure_user_menu_permissions_column() -> None:
+    """为已有 users 表补充 menu_permissions 列（SQLite 兼容的轻量迁移）。"""
+    try:
+        with engine.connect() as conn:
+            dialect = engine.dialect.name
+            if dialect == "sqlite":
+                rows = conn.execute(text("PRAGMA table_info(users)")).fetchall()
+                columns = {row[1] for row in rows}
+                if not rows:
+                    return
+                if "menu_permissions" not in columns:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN menu_permissions TEXT"))
+                    conn.commit()
+                    logger.info("已为 users 表补充 menu_permissions 列")
+            else:
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN menu_permissions TEXT"))
+                    conn.commit()
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"检查/补充 users.menu_permissions 列失败（可忽略）: {e}")
+
+
+def _ensure_email_messages_uid_column() -> None:
+    """为已有 email_messages 表补充 message_uid 列（SQLite 兼容的轻量迁移）。"""
+    try:
+        with engine.connect() as conn:
+            dialect = engine.dialect.name
+            if dialect == "sqlite":
+                rows = conn.execute(text("PRAGMA table_info(email_messages)")).fetchall()
+                if not rows:
+                    return
+                columns = {row[1] for row in rows}
+                if "message_uid" not in columns:
+                    conn.execute(text("ALTER TABLE email_messages ADD COLUMN message_uid VARCHAR(100)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_email_messages_uid ON email_messages(message_uid)"))
+                    conn.commit()
+                    logger.info("已为 email_messages 表补充 message_uid 列及索引")
+            else:
+                try:
+                    conn.execute(text("ALTER TABLE email_messages ADD COLUMN message_uid VARCHAR(100)"))
+                    conn.commit()
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"检查/补充 email_messages.message_uid 列失败（可忽略）: {e}")
+
+
 def init_db() -> None:
     """初始化数据库，创建默认admin用户并进行必要的表结构迁移"""
     _ensure_invoice_file_hash_column()
+    _ensure_user_menu_permissions_column()
+    _ensure_email_messages_uid_column()
     db: Session = SessionLocal()
     try:
         # 检查是否已有admin用户

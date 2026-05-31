@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     # 文件存储路径
     PDF_STORAGE_PATH: str = "./storage/pdf_invoices"
     PAPER_STORAGE_PATH: str = "./storage/paper_invoices"
+    EMAIL_TEMP_PATH: str = "./storage/email_temp"
 
     class Config:
         env_file = ".env"
