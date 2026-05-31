@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+venv/
+.venv/
+.env
+
+# Database
+*.db
+*.sqlite3
+
+# Storage (keep structure, ignore files)
+backend/storage/pdf_invoices/*
+!backend/storage/pdf_invoices/.gitkeep
+backend/storage/paper_invoices/*
+!backend/storage/paper_invoices/.gitkeep
+backend/storage/print_output/*
+!backend/storage/print_output/.gitkeep
+backend/storage/exports/*
+!backend/storage/exports/.gitkeep
+
+# Node
+node_modules/
+frontend/dist/
+*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
