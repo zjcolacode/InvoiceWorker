@@ -24,13 +24,16 @@ from app.schemas.email_config import (
     EmailFetchFilter,
     EmailFetchLog as EmailFetchLogSchema,
     EmailFetchLogPage,
+    EmailFetchProgress,
     EmailFetchResult,
+    EmailFetchTaskCreated,
     EmailTestRequest,
     EmailTestResponse,
 )
 from app.services.email_fetcher import (
     EmailFetcherService,
     encrypt_password,
+    get_progress,
 )
 
 logger = logging.getLogger(__name__)
@@ -152,16 +155,17 @@ async def test_connection(
     return EmailTestResponse(success=success, message=message)
 
 
-# ---------- 手动触发拉取 ----------
-@router.post("/fetch/{config_id}", response_model=EmailFetchResult)
+# ---------- 手动触发拉取（异步） ----------
+@router.post("/fetch/{config_id}", response_model=EmailFetchTaskCreated)
 async def manual_fetch(
     config_id: int,
     payload: Optional[EmailFetchFilter] = Body(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(["admin", "operator"])),
 ):
-    """手动触发邮件拉取(admin/operator)
+    """手动触发邮件拉取（异步执行，立即返回 task_id）
 
+    前端请通过 GET /api/email/fetch-progress/{task_id} 轮询进度。
     可选过滤条件：keyword / date_from / date_to / sender / has_attachment
     """
     config = db.query(EmailConfig).filter(EmailConfig.id == config_id).first()
@@ -172,10 +176,29 @@ async def manual_fetch(
         )
     filters = payload.model_dump() if payload else {}
     logger.info(
-        f"手动触发邮箱拉取 id={config_id} by {current_user.username} filters={filters}"
+        f"手动触发邮箱拉取(异步) id={config_id} by {current_user.username} filters={filters}"
     )
-    result = await EmailFetcherService.fetch_invoices(config_id, filters)
-    return EmailFetchResult(**result)
+    task_id = EmailFetcherService.start_async_fetch(config_id, filters)
+    return EmailFetchTaskCreated(
+        task_id=task_id,
+        config_id=config_id,
+        status="running",
+    )
+
+
+@router.get("/fetch-progress/{task_id}", response_model=EmailFetchProgress)
+async def fetch_progress(
+    task_id: str,
+    current_user: User = Depends(require_role(["admin", "operator"])),
+):
+    """查询异步拉取任务进度（admin/operator）"""
+    data = get_progress(task_id)
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"任务不存在或已过期: task_id={task_id}",
+        )
+    return EmailFetchProgress(task_id=task_id, **data)
 
 
 # ---------- 拉取日志 ----------
@@ -303,7 +326,10 @@ async def import_email_messages(
             skipped_count += 1
             continue
         invoice = Invoice(
-            source_type="email",
+            # 邮箱拉取的附件本质上是电子 PDF 发票，与手动上传 PDF 同为
+            # 「电子发票」，统一为 'pdf'。模型仅接受 'pdf' / 'paper' 两种值，
+            # 后续打印/导出/归档/前端显示都依赖这两种取值。
+            source_type="pdf",
             file_path=msg.attachment_path,
             original_filename=msg.attachment_name or os.path.basename(msg.attachment_path),
             status="pending",

@@ -107,3 +107,30 @@ class EmailFetchLogPage(BaseModel):
     page: int
     page_size: int
     items: list[EmailFetchLog] = Field(default_factory=list)
+
+
+class EmailFetchTaskCreated(BaseModel):
+    """异步拉取任务创建响应"""
+
+    task_id: str = Field(..., description="后台拉取任务ID，用于轮询进度")
+    config_id: int
+    status: str = Field(default="running", description="任务初始状态")
+
+
+class EmailFetchProgress(BaseModel):
+    """异步拉取任务进度"""
+
+    task_id: str
+    config_id: Optional[int] = None
+    status: str = Field(..., description="running/success/partial/failed")
+    stage: str = Field(default="queued", description="queued/connecting/searching/downloading/finished")
+    total: int = Field(default=0, description="待处理新邮件总数")
+    processed: int = Field(default=0, description="已处理邮件数")
+    total_emails_checked: int = Field(default=0, description="远程命中的邮件总数")
+    skipped_existing: int = Field(default=0, description="已存在跳过的邮件数")
+    new_invoices_found: int = Field(default=0, description="新增发票附件数")
+    email_address: Optional[str] = None
+    errors: list[str] = Field(default_factory=list)
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    result: Optional[EmailFetchResult] = None

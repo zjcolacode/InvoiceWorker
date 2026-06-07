@@ -53,6 +53,29 @@ export interface EmailFetchResult {
   status: string
 }
 
+export interface EmailFetchTaskCreated {
+  task_id: string
+  config_id: number
+  status: string
+}
+
+export interface EmailFetchProgress {
+  task_id: string
+  config_id: number | null
+  status: 'running' | 'success' | 'partial' | 'failed' | string
+  stage: 'queued' | 'connecting' | 'searching' | 'downloading' | 'finished' | string
+  total: number
+  processed: number
+  total_emails_checked: number
+  skipped_existing: number
+  new_invoices_found: number
+  email_address: string | null
+  errors: string[]
+  started_at: number | null
+  finished_at: number | null
+  result: EmailFetchResult | null
+}
+
 export interface EmailFetchLogItem {
   id: number
   config_id: number
@@ -128,12 +151,15 @@ export function testConnection(data: EmailTestPayload) {
 }
 
 export function manualFetch(configId: number, filter?: EmailFetchFilter) {
-  return request.post<EmailFetchResult, EmailFetchResult>(
+  return request.post<EmailFetchTaskCreated, EmailFetchTaskCreated>(
     `/api/email/fetch/${configId}`,
     filter ?? {},
-    {
-      timeout: 120000, // 邮件拉取涉及远程IMAP操作，延长到120秒
-    },
+  )
+}
+
+export function getFetchProgress(taskId: string) {
+  return request.get<EmailFetchProgress, EmailFetchProgress>(
+    `/api/email/fetch-progress/${taskId}`,
   )
 }
 

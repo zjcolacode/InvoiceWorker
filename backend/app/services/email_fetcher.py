@@ -10,6 +10,9 @@ import imaplib
 import logging
 import os
 import re
+import threading
+import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 from typing import Optional
@@ -25,6 +28,39 @@ from app.models.email_message import EmailMessage
 from app.schemas.email_config import EmailTestRequest
 
 logger = logging.getLogger(__name__)
+
+# ---------- 异步拉取任务进度存储（进程内存，适用于单 worker uvicorn）----------
+_progress_store: dict[str, dict] = {}
+_progress_lock = threading.Lock()
+_PROGRESS_TTL_SECONDS = 60 * 60  # 保留 1 小时后供前端轮询查看结果
+
+
+def _gc_progress_store() -> None:
+    """清理过期的进度记录。"""
+    now = time.time()
+    with _progress_lock:
+        expired = [
+            tid for tid, p in _progress_store.items()
+            if p.get("finished_at") and now - p["finished_at"] > _PROGRESS_TTL_SECONDS
+        ]
+        for tid in expired:
+            _progress_store.pop(tid, None)
+
+
+def _set_progress(task_id: str, **kwargs) -> None:
+    """原子更新某个任务的进度字段。"""
+    if not task_id:
+        return
+    with _progress_lock:
+        data = _progress_store.setdefault(task_id, {})
+        data.update(kwargs)
+
+
+def get_progress(task_id: str) -> Optional[dict]:
+    """获取某个任务的进度快照。"""
+    with _progress_lock:
+        data = _progress_store.get(task_id)
+        return dict(data) if data else None
 
 
 # ---------- 密码加解密 ----------
@@ -57,25 +93,65 @@ def decrypt_password(encrypted: str) -> str:
 
 
 # ---------- 工具函数 ----------
+_FALLBACK_ENCODINGS = ("utf-8", "gb18030", "gbk", "big5")
+
+
+def _decode_bytes(raw: bytes, charset: Optional[str] = None) -> str:
+    """按声明 charset 优先，再依次尝试常见中文编码解码字节序列。"""
+    candidates: list[str] = []
+    if charset:
+        candidates.append(charset)
+    for enc in _FALLBACK_ENCODINGS:
+        if enc not in candidates:
+            candidates.append(enc)
+    for enc in candidates:
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("latin-1", errors="replace")
+
+
+def _fix_mojibake(text: str) -> str:
+    """修正 email 库以 surrogateescape/latin-1 预解码导致的伪字符串。
+
+    例如：UTF-8 字节 0xE5 0xA2 0x9E 被 latin-1 解码成 'å¢\x9e'，
+    这里再用 latin-1 编回字节、按 UTF-8/GBK 重新解码即可还原。
+    """
+    if not text or all(ord(c) < 128 for c in text):
+        return text
+    try:
+        raw = text.encode("latin-1", errors="strict")
+    except UnicodeEncodeError:
+        # 含非 latin-1 字符，说明已是正常 Unicode，无需修复
+        return text
+    for enc in _FALLBACK_ENCODINGS:
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return text
+
+
 def _decode_str(value) -> str:
-    """解码邮件中可能编码过的字符串(主题、文件名等)"""
+    """解码邮件中可能编码过的字符串(主题、文件名等)
+
+    覆盖三类情况：
+    1) bytes：按候选编码探测解码
+    2) RFC2047 编码头(=?utf-8?B?...?=)：decode_header 已切分为 bytes+charset
+    3) 裸 8bit 字节头：email 库会以 latin-1 把字节预解码成伪字符串，需反向修正
+    """
     if value is None:
         return ""
     if isinstance(value, bytes):
-        try:
-            return value.decode("utf-8", errors="replace")
-        except Exception:
-            return value.decode("latin-1", errors="replace")
+        return _decode_bytes(value)
     parts = decode_header(value)
-    out = []
+    out: list[str] = []
     for part, charset in parts:
         if isinstance(part, bytes):
-            try:
-                out.append(part.decode(charset or "utf-8", errors="replace"))
-            except Exception:
-                out.append(part.decode("latin-1", errors="replace"))
+            out.append(_decode_bytes(part, charset))
         else:
-            out.append(part)
+            out.append(_fix_mojibake(part))
     return "".join(out)
 
 
@@ -270,14 +346,15 @@ class EmailFetcherService:
             except UnicodeEncodeError:
                 keyword_post = keyword
 
-        criteria = "(" + " ".join(parts) + ")"
+        criteria = " ".join(parts) if parts else "ALL"
         return criteria, keyword_post
 
     @staticmethod
-    def _do_fetch(config_id: int, filters: Optional[dict] = None) -> dict:
+    def _do_fetch(config_id: int, filters: Optional[dict] = None, task_id: Optional[str] = None) -> dict:
         """同步执行邮件拉取(在线程中调用)
 
         :param filters: 可选过滤条件 keyword/date_from/date_to/sender/has_attachment
+        :param task_id: 可选任务标识，传入后会同步上报进度
         """
         filters = filters or {}
         db: Session = SessionLocal()
@@ -288,6 +365,16 @@ class EmailFetcherService:
             "errors": [],
             "status": "success",
         }
+        _set_progress(
+            task_id,
+            status="running",
+            stage="connecting",
+            config_id=config_id,
+            total=0,
+            processed=0,
+            new_invoices_found=0,
+            errors=[],
+        )
         client: Optional[imaplib.IMAP4] = None
         try:
             config = db.query(EmailConfig).filter(EmailConfig.id == config_id).first()
@@ -307,8 +394,12 @@ class EmailFetcherService:
                 bool(use_ssl),
             )
             client.select("INBOX")
+            _set_progress(task_id, stage="searching", email_address=config.email_address)
 
-            # 使用UID SEARCH代替普通SEARCH，获取稳定的UID用于去重
+            # 使用 UID SEARCH 获取稳定的 UID 用于去重。
+            # 注意：搜索条件字符串不能加外层括号，imap.exmail.qq.com 等
+            # 部分服务器会将 "(SINCE ... BEFORE ...)" 整个视为不可识别的单个
+            # token 而退化为 ALL，导致日期过滤完全失效。
             criteria, keyword_post = EmailFetcherService._build_search_criteria(
                 config.last_check_at, filters
             )
@@ -333,11 +424,18 @@ class EmailFetcherService:
             logger.info(
                 f"去重后需处理 {len(new_uids)} 封新邮件 (已存在 {len(uids) - len(new_uids)} 封)"
             )
+            _set_progress(
+                task_id,
+                stage="downloading",
+                total=len(new_uids),
+                total_emails_checked=len(uids),
+                skipped_existing=len(uids) - len(new_uids),
+            )
 
             today = datetime.now().strftime("%Y-%m-%d")
             target_dir = os.path.join(settings.EMAIL_TEMP_PATH, today)
 
-            for uid in new_uids:
+            for idx, uid in enumerate(new_uids, start=1):
                 try:
                     typ, msg_data = client.uid("fetch", uid, "(RFC822)")
                     if typ != "OK" or not msg_data or not msg_data[0]:
@@ -395,6 +493,13 @@ class EmailFetcherService:
                     msg_err = f"邮件处理失败 uid={uid!r}: {item_err}"
                     logger.warning(msg_err)
                     result["errors"].append(msg_err)
+                finally:
+                    # 每处理一封邮件后上报进度，供前端展示进度条
+                    _set_progress(
+                        task_id,
+                        processed=idx,
+                        new_invoices_found=result["new_invoices_found"],
+                    )
 
             config.last_check_at = datetime.now(timezone.utc)
             db.commit()
@@ -431,12 +536,61 @@ class EmailFetcherService:
                 db.rollback()
             finally:
                 db.close()
+
+            # 任务结束，刷新进度为终态
+            _set_progress(
+                task_id,
+                status=result["status"],
+                stage="finished",
+                total_emails_checked=result["total_emails_checked"],
+                new_invoices_found=result["new_invoices_found"],
+                errors=result["errors"],
+                finished_at=time.time(),
+                result=result,
+            )
+            _gc_progress_store()
         return result
 
     @staticmethod
     async def fetch_invoices(config_id: int, filters: Optional[dict] = None) -> dict:
-        """异步触发邮件拉取"""
+        """异步触发邮件拉取（同步等待完成，仅用于后台定时任务）"""
         return await asyncio.to_thread(EmailFetcherService._do_fetch, config_id, filters)
+
+    @staticmethod
+    def start_async_fetch(config_id: int, filters: Optional[dict] = None) -> str:
+        """启动后台线程执行拉取，立即返回 task_id。
+
+        前端可通过 GET /api/email/fetch-progress/{task_id} 轮询进度。
+        """
+        task_id = uuid.uuid4().hex
+        _set_progress(
+            task_id,
+            status="running",
+            stage="queued",
+            config_id=config_id,
+            total=0,
+            processed=0,
+            new_invoices_found=0,
+            errors=[],
+            started_at=time.time(),
+        )
+
+        def _runner() -> None:
+            try:
+                EmailFetcherService._do_fetch(config_id, filters, task_id=task_id)
+            except Exception as exc:  # pragma: no cover - 兼容意外错误
+                logger.exception(f"异步拉取崩溃 task_id={task_id}")
+                _set_progress(
+                    task_id,
+                    status="failed",
+                    stage="finished",
+                    errors=[str(exc)],
+                    finished_at=time.time(),
+                )
+
+        thread = threading.Thread(target=_runner, name=f"email-fetch-{task_id[:8]}", daemon=True)
+        thread.start()
+        return task_id
 
 
 # 模块级便捷接口

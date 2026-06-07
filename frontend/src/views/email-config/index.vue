@@ -1,5 +1,46 @@
 <template>
   <div class="email-config-page">
+    <!-- 异步拉取进度条 -->
+    <transition name="el-fade-in">
+      <el-card v-if="fetchTask" shadow="never" class="section-card progress-card">
+        <div class="progress-card__head">
+          <div class="progress-card__title">
+            <el-icon class="is-loading" v-if="fetchTask.status === 'running'">
+              <Loading />
+            </el-icon>
+            <span>{{ progressTitle }}</span>
+            <el-tag
+              :type="progressTagType"
+              size="small"
+              effect="plain"
+              style="margin-left: 8px"
+            >
+              {{ progressStatusLabel }}
+            </el-tag>
+          </div>
+          <div class="progress-card__actions">
+            <span class="progress-card__sub">{{ progressSubLabel }}</span>
+            <el-button
+              v-if="fetchTask.status !== 'running'"
+              link
+              type="primary"
+              size="small"
+              @click="dismissProgress"
+            >
+              收起
+            </el-button>
+          </div>
+        </div>
+        <el-progress
+          :percentage="progressPercent"
+          :status="progressBarStatus"
+          :stroke-width="12"
+          :indeterminate="progressIndeterminate"
+          :duration="3"
+        />
+      </el-card>
+    </transition>
+
     <!-- 授权码提示 -->
     <el-alert
       type="info"
@@ -494,10 +535,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
-import { ElLoading, ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Loading, Plus, Refresh } from '@element-plus/icons-vue'
 import {
   createEmailConfig,
   deleteEmailConfig,
@@ -505,6 +546,7 @@ import {
   getEmailConfigs,
   getEmailMessages,
   getFetchLogs,
+  getFetchProgress,
   importEmailMessages,
   manualFetch,
   testConnection,
@@ -512,6 +554,8 @@ import {
   type EmailConfigItem,
   type EmailFetchFilter,
   type EmailFetchLogItem,
+  type EmailFetchProgress,
+  type EmailFetchTaskCreated,
   type EmailMessageItem,
   type EmailMessagePage,
   type EmailTestResult,
@@ -550,6 +594,18 @@ const probeResult = ref<EmailTestResult | null>(null)
 /* 拉取过滤条件对话框状态 */
 const fetchFilterVisible = ref(false)
 const pendingFetchConfig = ref<EmailConfigItem | null>(null)
+
+/* 异步拉取任务状态 */
+const fetchTask = ref<EmailFetchProgress | null>(null)
+const fetchTaskEmail = ref<string>('')
+let pollTimer: number | null = null
+
+function stopPolling() {
+  if (pollTimer != null) {
+    window.clearTimeout(pollTimer)
+    pollTimer = null
+  }
+}
 
 function defaultDateRange(): [string, string] {
   const today = new Date()
@@ -642,6 +698,78 @@ const todayHarvest = computed(() => {
     }
   }
   return total
+})
+
+/* ---------- 异步拉取进度条计算 ---------- */
+const progressTitle = computed(() => {
+  const email = fetchTask.value?.email_address || fetchTaskEmail.value
+  return email ? `正在拉取邮箱：${email}` : '正在拉取邮箱'
+})
+
+const progressStatusLabel = computed(() => {
+  if (!fetchTask.value) return ''
+  const map: Record<string, string> = {
+    running: '进行中',
+    success: '已完成',
+    partial: '部分完成',
+    failed: '失败',
+  }
+  return map[fetchTask.value.status] || fetchTask.value.status
+})
+
+const progressTagType = computed<'primary' | 'success' | 'warning' | 'danger' | 'info'>(() => {
+  const s = fetchTask.value?.status
+  if (s === 'success') return 'success'
+  if (s === 'partial') return 'warning'
+  if (s === 'failed') return 'danger'
+  return 'primary'
+})
+
+const progressBarStatus = computed<'success' | 'warning' | 'exception' | undefined>(() => {
+  const s = fetchTask.value?.status
+  if (s === 'success') return 'success'
+  if (s === 'partial') return 'warning'
+  if (s === 'failed') return 'exception'
+  return undefined
+})
+
+const progressIndeterminate = computed(() => {
+  if (!fetchTask.value) return false
+  if (fetchTask.value.status !== 'running') return false
+  // 连接与搜索阶段还拿不到 total，展示动画
+  return fetchTask.value.total <= 0
+})
+
+const progressPercent = computed(() => {
+  const t = fetchTask.value
+  if (!t) return 0
+  if (t.status === 'success' || t.status === 'partial') return 100
+  if (t.status === 'failed') return 100
+  if (t.total <= 0) return 0
+  return Math.min(100, Math.floor((t.processed / t.total) * 100))
+})
+
+const progressSubLabel = computed(() => {
+  const t = fetchTask.value
+  if (!t) return ''
+  const stageMap: Record<string, string> = {
+    queued: '排队中',
+    connecting: '连接邮箱服务器中',
+    searching: '检索邮件列表中',
+    downloading: '下载邮件与附件中',
+    finished: '已完成',
+  }
+  const stageText = stageMap[t.stage] || t.stage
+  if (t.status === 'failed') {
+    return `失败：${t.errors?.[0] || '未知错误'}`
+  }
+  if (t.status !== 'running') {
+    return `检索 ${t.total_emails_checked} 封，新增附件 ${t.new_invoices_found} 份`
+  }
+  if (t.total > 0) {
+    return `${stageText} · ${t.processed}/${t.total} · 新增 ${t.new_invoices_found}`
+  }
+  return stageText
 })
 
 /* ------------------------- helpers ------------------------- */
@@ -946,41 +1074,97 @@ async function confirmFetch() {
     if (to) payload.date_to = to
   }
 
-  // 关闭过滤对话框后开启全屏模态 Loading
+  // 关闭过滤对话框，启动异步任务 + 轮询进度
   fetchFilterVisible.value = false
   fetchingId.value = target.id
-  const loadingInstance = ElLoading.service({
-    fullscreen: true,
-    lock: true,
-    text: '正在拉取邮件，请稍候……',
-    background: 'rgba(0, 0, 0, 0.6)',
-  })
+  fetchTaskEmail.value = target.email_address
+  // 重置进度卡片为初始状态
+  fetchTask.value = {
+    task_id: '',
+    config_id: target.id,
+    status: 'running',
+    stage: 'queued',
+    total: 0,
+    processed: 0,
+    total_emails_checked: 0,
+    skipped_existing: 0,
+    new_invoices_found: 0,
+    email_address: target.email_address,
+    errors: [],
+    started_at: null,
+    finished_at: null,
+    result: null,
+  }
 
+  let taskId = ''
   try {
-    const res = (await manualFetch(target.id, payload)) as unknown as {
-      total_emails_checked: number
-      new_invoices_found: number
-      status: string
-      errors: string[]
-    }
-    if (res.status === 'failed') {
-      ElMessage.error(`拉取失败：${res.errors?.[0] || '未知错误'}`)
-    } else {
-      ElMessage.success(
-        `拉取完成 · 检索 ${res.total_emails_checked} 封 · 新增邮件附件 ${res.new_invoices_found} 份`,
-      )
-    }
-    messagePage.value = 1
-    messageFilter.value = 'pending'
-    selectedMessageIds.value = []
-    await Promise.all([loadConfigs(), loadLogs(), loadMessages()])
+    const created = (await manualFetch(target.id, payload)) as unknown as EmailFetchTaskCreated
+    taskId = created.task_id
+    if (fetchTask.value) fetchTask.value.task_id = taskId
+    ElMessage.success('已启动后台拉取任务，可继续其他操作')
   } catch {
-    /* 错误已由拦截器提示 */
-  } finally {
-    loadingInstance.close()
+    fetchTask.value = null
     fetchingId.value = null
     pendingFetchConfig.value = null
+    return
   }
+
+  // 启动轮询
+  pollProgress(taskId)
+  pendingFetchConfig.value = null
+}
+
+async function pollProgress(taskId: string) {
+  stopPolling()
+  if (!taskId) return
+  const tick = async () => {
+    try {
+      const data = (await getFetchProgress(taskId)) as unknown as EmailFetchProgress
+      fetchTask.value = data
+      if (data.status === 'running') {
+        pollTimer = window.setTimeout(tick, 1500)
+        return
+      }
+      // 终态：刷新列表，释放拉取按钮loading
+      fetchingId.value = null
+      const finalStatus = data.status
+      if (finalStatus === 'failed') {
+        ElMessage.error(`拉取失败：${data.errors?.[0] || '未知错误'}`)
+      } else if (finalStatus === 'partial') {
+        ElMessage.warning(
+          `部分完成 · 检索 ${data.total_emails_checked} 封 · 新增附件 ${data.new_invoices_found} 份`,
+        )
+      } else {
+        ElMessage.success(
+          `拉取完成 · 检索 ${data.total_emails_checked} 封 · 新增附件 ${data.new_invoices_found} 份`,
+        )
+      }
+      messagePage.value = 1
+      messageFilter.value = 'pending'
+      selectedMessageIds.value = []
+      await Promise.all([loadConfigs(), loadLogs(), loadMessages()])
+    } catch (err) {
+      // 轮询失败：可能是 task 过期或服务重启，停止轮询
+      console.warn('拉取进度轮询异常', err)
+      fetchingId.value = null
+      if (fetchTask.value) {
+        fetchTask.value = {
+          ...fetchTask.value,
+          status: 'failed',
+          stage: 'finished',
+          errors: ['进度查询失败，请查看拉取日志'],
+        }
+      }
+    }
+  }
+  // 首次指令立即查一次
+  await tick()
+}
+
+function dismissProgress() {
+  fetchTask.value = null
+  fetchTaskEmail.value = ''
+  stopPolling()
 }
 
 /* ------------------------- lifecycle ------------------------- */
@@ -988,6 +1172,10 @@ onMounted(() => {
   loadConfigs()
   loadLogs()
   loadMessages()
+})
+
+onBeforeUnmount(() => {
+  stopPolling()
 })
 </script>
 
@@ -1099,5 +1287,34 @@ onMounted(() => {
 
 .text-danger {
   color: #f56c6c;
+}
+
+.progress-card .progress-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.progress-card__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.progress-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.progress-card__sub {
+  font-size: 12px;
+  color: #909399;
 }
 </style>
