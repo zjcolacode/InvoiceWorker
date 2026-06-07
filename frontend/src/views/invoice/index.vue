@@ -311,13 +311,17 @@ function statusText(status: string): string {
   return '待识别'
 }
 
-// 识别（状态由后端驱动，不再在前端本地设置 recognizing）
+// 识别（状态由后端驱动，但点击后立即乐观锁定本地状态防重复点击）
 async function handleRecognize(id: number) {
   const row = invoiceList.value.find((item) => item.id === id)
   if (row && row.status === 'recognizing') {
     ElMessage.warning('该发票正在被其他流程处理，请稍后再试')
     return
   }
+
+  // 点击后立即乐观更新为 recognizing，让按钮 :loading / :disabled 立即生效，
+  // 避免同步识别期间用户重复点击导致后端 409。loadData() 会以后端真实状态覆盖。
+  if (row) row.status = 'recognizing'
 
   // 提示用户
   ElMessage.info('正在识别中，请稍候...')
@@ -355,6 +359,14 @@ async function handleBatchRecognize() {
       `${recognizingRows.length} 张发票正在被其他流程识别中，将被跳过`,
     )
   }
+
+  // 乐观锁定：点击“批量识别”后立即将选中且未处于 recognizing 的行设为 recognizing，
+  // 避免串行调用期间用户反复点击导致 409。后续每张 loadData() 会以后端状态覆盖。
+  invoiceList.value.forEach((item) => {
+    if (ids.includes(item.id) && item.status !== 'recognizing') {
+      item.status = 'recognizing'
+    }
+  })
 
   ElMessage.info(`开始批量识别 ${ids.length} 张发票...`)
 

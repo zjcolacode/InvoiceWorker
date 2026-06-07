@@ -83,14 +83,14 @@ async def get_dashboard_stats(
         or 0.0
     )
 
-    # 待识别
+    # 待识别(全量: 不限月份, 反映系统中所有待处理发票)
     pending_count = (
         _scoped(db.query(func.count(Invoice.id)).filter(Invoice.status == "pending"))
         .scalar()
         or 0
     )
 
-    # 已识别
+    # 已识别(全量: 不限月份, 反映系统累计已识别发票)
     recognized_count = (
         _scoped(
             db.query(func.count(Invoice.id)).filter(
