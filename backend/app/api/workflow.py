@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import json
 import logging
 import os
@@ -194,16 +195,39 @@ def _restore_recognizing_to_pending(db: Session, ids: List[int]) -> None:
 
 
 # ---------- 步骤实现 ----------
+def _current_month_range() -> tuple[str, str]:
+    """返回当月 1 号与月末的 ISO 日期字符串 (YYYY-MM-DD)。
+
+    为「一键月度整理」的邮件拉取提供默认范围，以避免
+    `_build_search_criteria` 在 filters 为空时退化为 SINCE 今天。
+    """
+    today = datetime.now()
+    first_day = today.replace(day=1)
+    last_day_num = calendar.monthrange(today.year, today.month)[1]
+    last_day = today.replace(day=last_day_num)
+    return first_day.strftime("%Y-%m-%d"), last_day.strftime("%Y-%m-%d")
+
+
 def _do_email_fetch_sync(user_id: Optional[int]) -> Dict[str, Any]:
-    """遍历活跃邮箱配置, 依次拉取(同步, 在线程中调用)"""
+    """遍历活跃邮箱配置, 依次拉取(同步, 在线程中调用)
+
+    「一键月度整理」默认拉取「当月 1 号 ~ 月末」区间的邮件，
+    不限主题/发件人，has_attachment 默认 True（仅拉含附件邮件）。
+    """
     db: Session = SessionLocal()
     summary = {"configs": 0, "checked": 0, "new_invoices": 0, "errors": []}
+    date_from, date_to = _current_month_range()
+    filters = {
+        "date_from": date_from,
+        "date_to": date_to,
+        "has_attachment": True,
+    }
     try:
         configs = db.query(EmailConfig).filter(EmailConfig.is_active.is_(True)).all()
         summary["configs"] = len(configs)
         for cfg in configs:
             try:
-                result = EmailFetcherService._do_fetch(cfg.id)
+                result = EmailFetcherService._do_fetch(cfg.id, filters=filters)
                 summary["checked"] += int(result.get("total_emails_checked", 0))
                 summary["new_invoices"] += int(result.get("new_invoices_found", 0))
                 if result.get("errors"):
@@ -220,7 +244,9 @@ async def _step_email_fetch(rt: _WorkflowRuntime) -> None:
     rt.begin_step("email_fetch")
     try:
         summary = await asyncio.to_thread(_do_email_fetch_sync, rt.user_id)
+        date_from, date_to = _current_month_range()
         text = (
+            f"范围 {date_from} ~ {date_to}, "
             f"扫描 {summary['configs']} 个邮箱, "
             f"检查 {summary['checked']} 封, 入库 {summary['new_invoices']} 张发票"
         )
