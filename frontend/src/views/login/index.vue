@@ -18,7 +18,6 @@
             autocomplete="username"
             :prefix-icon="User"
             clearable
-            @keyup.enter="onSubmit"
           />
         </el-form-item>
 
@@ -30,7 +29,6 @@
             autocomplete="current-password"
             :prefix-icon="Lock"
             show-password
-            @keyup.enter="onSubmit"
           />
         </el-form-item>
 
@@ -39,7 +37,6 @@
           class="login-btn"
           :loading="loading"
           native-type="submit"
-          @click="onSubmit"
         >
           登 录
         </el-button>
