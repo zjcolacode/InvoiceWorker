@@ -21,6 +21,7 @@
           :on-exceed="handleExceed"
           drag
           class="upload-dragger"
+          @click="handleUploadClick"
         >
           <el-icon class="el-icon--upload" :size="48"><UploadFilled /></el-icon>
           <div class="el-upload__text">
@@ -165,7 +166,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { nextTick, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Check, UploadFilled } from '@element-plus/icons-vue'
 import type { UploadFile, UploadInstance } from 'element-plus'
@@ -200,6 +201,29 @@ function handleFileRemove() {
 
 function handleExceed() {
   ElMessage.warning('仅支持上传一个文件，请先移除已选文件')
+}
+
+// 修复：原生文件选择器关闭后浏览器窗口焦点丢失，导致页面无法响应点击
+function handleUploadClick() {
+  setTimeout(() => {
+    window.focus()
+  }, 300)
+
+  nextTick(() => {
+    const input = uploadRef.value?.$el?.querySelector(
+      'input[type=file]',
+    ) as HTMLInputElement | null
+    if (input && !input.dataset.focusBound) {
+      input.dataset.focusBound = '1'
+      input.addEventListener(
+        'cancel',
+        () => {
+          setTimeout(() => window.focus(), 100)
+        },
+        { once: true },
+      )
+    }
+  })
 }
 
 async function handleVerify() {
