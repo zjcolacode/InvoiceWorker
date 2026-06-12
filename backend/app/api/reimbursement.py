@@ -20,8 +20,36 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _find_invoice_no_columns(header: list) -> tuple[int | None, int | None]:
+    """在表头中查找「发票号码」和「数电发票号码」列的索引。
+
+    返回 (发票号码列索引, 数电发票号码列索引)，未找到的为 None。
+    """
+    invoice_no_idx = None
+    digital_no_idx = None
+    for idx, cell in enumerate(header):
+        if cell is None:
+            continue
+        name = str(cell).strip()
+        if name == "数电发票号码":
+            digital_no_idx = idx
+        elif "发票号码" in name and invoice_no_idx is None:
+            invoice_no_idx = idx
+    return invoice_no_idx, digital_no_idx
+
+
+def _extract_invoice_no(row: tuple, no_idx: int | None, digital_idx: int | None) -> str | None:
+    """从一行中提取发票号码：优先取「发票号码」，为空则回退到「数电发票号码」。"""
+    for idx in (no_idx, digital_idx):
+        if idx is not None and idx < len(row) and row[idx] is not None:
+            val = str(row[idx]).strip()
+            if val:
+                return val
+    return None
+
+
 def _parse_invoice_numbers_from_xlsx(content: bytes) -> list[str]:
-    """从 xlsx 文件中提取「发票号码」列的所有值。"""
+    """从 xlsx 文件中提取发票号码（支持「发票号码」和「数电发票号码」）。"""
     wb = load_workbook(filename=io.BytesIO(content), read_only=True)
     ws = wb.active
     if ws is None:
@@ -31,22 +59,16 @@ def _parse_invoice_numbers_from_xlsx(content: bytes) -> list[str]:
     if not rows:
         raise ValueError("Excel 文件为空")
 
-    # 在表头行中查找「发票号码」列
     header = rows[0]
-    col_idx = None
-    for idx, cell in enumerate(header):
-        if cell and "发票号码" in str(cell).strip():
-            col_idx = idx
-            break
-    if col_idx is None:
-        raise ValueError("未找到「发票号码」列，请检查文件表头")
+    no_idx, digital_idx = _find_invoice_no_columns(header)
+    if no_idx is None and digital_idx is None:
+        raise ValueError("未找到「发票号码」或「数电发票号码」列，请检查文件表头")
 
     invoice_nos = []
     for row in rows[1:]:
-        if col_idx < len(row) and row[col_idx] is not None:
-            val = str(row[col_idx]).strip()
-            if val:
-                invoice_nos.append(val)
+        val = _extract_invoice_no(row, no_idx, digital_idx)
+        if val:
+            invoice_nos.append(val)
     wb.close()
     return invoice_nos
 
@@ -70,18 +92,16 @@ def _parse_invoice_numbers_from_csv(content: bytes) -> list[str]:
         raise ValueError("CSV 文件为空")
 
     header = rows[0]
-    col_idx = None
-    for idx, cell in enumerate(header):
-        if "发票号码" in cell.strip():
-            col_idx = idx
-            break
-    if col_idx is None:
-        raise ValueError("未找到「发票号码」列，请检查文件表头")
+    no_idx, digital_idx = _find_invoice_no_columns(header)
+    if no_idx is None and digital_idx is None:
+        raise ValueError("未找到「发票号码」或「数电发票号码」列，请检查文件表头")
 
     invoice_nos = []
     for row in rows[1:]:
-        if col_idx < len(row) and row[col_idx].strip():
-            invoice_nos.append(row[col_idx].strip())
+        # csv rows 是 list[str]，转为 tuple 以复用 _extract_invoice_no
+        val = _extract_invoice_no(tuple(row), no_idx, digital_idx)
+        if val:
+            invoice_nos.append(val)
     return invoice_nos
 
 
