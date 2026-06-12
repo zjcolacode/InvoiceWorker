@@ -55,6 +55,8 @@ class InvoiceResponse(BaseModel):
     original_filename: Optional[str] = None
     recognized_at: Optional[datetime] = None
     status: str
+    is_reimbursed: bool = False
+    reimbursed_at: Optional[datetime] = None
     user_id: Optional[int] = None
     uploader_username: Optional[str] = None  # 仅 admin 视角列表展示用，非数据库字段
     created_at: Optional[datetime] = None

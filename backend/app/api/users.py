@@ -31,6 +31,7 @@ SYSTEM_MENUS: List[dict] = [
     {"path": "/print", "title": "打印管理", "roles": None},
     {"path": "/users", "title": "用户管理", "roles": ["admin"]},
     {"path": "/categories", "title": "分类管理", "roles": ["admin", "operator"]},
+    {"path": "/reimbursement", "title": "报销单管理", "roles": None},
 ]
 
 

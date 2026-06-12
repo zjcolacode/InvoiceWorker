@@ -5,6 +5,7 @@ from app.models.email_fetch_log import EmailFetchLog
 from app.models.email_message import EmailMessage
 from app.models.processing_task import ProcessingTask
 from app.models.category import Category
+from app.models.reimbursement import ReimbursementRecord
 
 __all__ = [
     "User",
@@ -14,4 +15,5 @@ __all__ = [
     "EmailMessage",
     "ProcessingTask",
     "Category",
+    "ReimbursementRecord",
 ]

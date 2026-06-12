@@ -86,6 +86,47 @@ def _ensure_email_messages_uid_column() -> None:
         logger.warning(f"检查/补充 email_messages.message_uid 列失败（可忽略）: {e}")
 
 
+def _ensure_invoice_reimbursement_columns() -> None:
+    """为已有 invoices 表补充 is_reimbursed 和 reimbursed_at 列（SQLite 兼容的轻量迁移）。"""
+    try:
+        with engine.connect() as conn:
+            dialect = engine.dialect.name
+            if dialect == "sqlite":
+                rows = conn.execute(text("PRAGMA table_info(invoices)")).fetchall()
+                if not rows:
+                    return
+                columns = {row[1] for row in rows}
+                if "is_reimbursed" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE invoices ADD COLUMN is_reimbursed BOOLEAN DEFAULT 0 NOT NULL"
+                    ))
+                    conn.commit()
+                    logger.info("已为 invoices 表补充 is_reimbursed 列")
+                if "reimbursed_at" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE invoices ADD COLUMN reimbursed_at DATETIME"
+                    ))
+                    conn.commit()
+                    logger.info("已为 invoices 表补充 reimbursed_at 列")
+            else:
+                try:
+                    conn.execute(text(
+                        "ALTER TABLE invoices ADD COLUMN is_reimbursed BOOLEAN DEFAULT FALSE NOT NULL"
+                    ))
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text(
+                        "ALTER TABLE invoices ADD COLUMN reimbursed_at DATETIME"
+                    ))
+                    conn.commit()
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"检查/补充 invoices 核销列失败（可忽略）: {e}")
+
+
 def _deduplicate_email_messages() -> None:
     """清理 email_messages 表中的重复数据
 
@@ -140,6 +181,7 @@ def init_db() -> None:
     _ensure_invoice_file_hash_column()
     _ensure_user_menu_permissions_column()
     _ensure_email_messages_uid_column()
+    _ensure_invoice_reimbursement_columns()
     _deduplicate_email_messages()
     db: Session = SessionLocal()
     try:

@@ -58,6 +58,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/categories/index.vue'),
         meta: { title: '分类管理', icon: 'Collection', roles: ['admin', 'operator'] },
       },
+      {
+        path: 'reimbursement',
+        name: 'Reimbursement',
+        component: () => import('@/views/reimbursement/index.vue'),
+        meta: { title: '报销单管理', icon: 'Ticket' },
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/login' },
@@ -123,6 +129,7 @@ router.beforeEach(async (to, _from, next) => {
       '/print',
       '/users',
       '/categories',
+      '/reimbursement',
     ]
     if (knownMenuPaths.includes(topLevel) && !store.canAccessMenu(topLevel)) {
       ElMessage.warning('您没有权限访问该菜单')
