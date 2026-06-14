@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     PDF_STORAGE_PATH: str = "./storage/pdf_invoices"
     PAPER_STORAGE_PATH: str = "./storage/paper_invoices"
     EMAIL_TEMP_PATH: str = "./storage/email_temp"
+    REIMB_EMAIL_TEMP_PATH: str = "./storage/reimb_email_temp"
+    MANUAL_MATCH_PATH: str = "./storage/manual_match"
 
     class Config:
         env_file = ".env"

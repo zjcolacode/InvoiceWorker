@@ -14,6 +14,8 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     role = Column(String(20), default="user", nullable=False)  # admin, operator, viewer
     email = Column(String(100), unique=True, index=True, nullable=True)
+    full_name = Column(String(100), nullable=True, comment="员工姓名")
+    position = Column(String(100), nullable=True, comment="员工岗位")
     is_active = Column(Boolean, default=True, nullable=False)
     # JSON 字符串，存储允许访问的菜单路由列表，例如：["/dashboard", "/invoice"]
     # admin 角色忽略该字段，默认拥有全部菜单权限

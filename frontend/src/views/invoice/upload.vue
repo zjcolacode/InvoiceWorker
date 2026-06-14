@@ -26,6 +26,7 @@
         :on-remove="handleFileRemove"
         :file-list="fileList"
         :disabled="uploading"
+        @click="handleUploadClick"
       >
         <el-icon class="el-icon--upload"><upload-filled /></el-icon>
         <div class="el-upload__text">
@@ -54,7 +55,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { ElMessage, type UploadFile, type UploadInstance, type UploadUserFile } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 import { uploadInvoices } from '@/api/invoice'
@@ -112,6 +113,33 @@ function handleFileChange(file: UploadFile, files: UploadUserFile[]) {
 
 function handleFileRemove(_file: UploadFile, files: UploadUserFile[]) {
   fileList.value = files
+}
+
+// 修复：原生文件选择器关闭后浏览器窗口焦点丢失，导致对话框按钮无法响应点击
+// 在触发文件选择器后延迟调用 window.focus()，确保窗口恢复激活状态
+function handleUploadClick() {
+  // 延迟执行：文件选择器打开期间 JS 被阻塞，关闭后 setTimeout 回调立即触发
+  // 给浏览器 300ms 完成文件选择器的关闭动画和内部清理
+  setTimeout(() => {
+    window.focus()
+  }, 300)
+
+  // 备用方案：监听 input[type=file] 的 cancel 事件（用户取消文件选择时触发）
+  nextTick(() => {
+    const input = uploadRef.value?.$el?.querySelector(
+      'input[type=file]',
+    ) as HTMLInputElement | null
+    if (input && !input.dataset.focusBound) {
+      input.dataset.focusBound = '1'
+      input.addEventListener(
+        'cancel',
+        () => {
+          setTimeout(() => window.focus(), 100)
+        },
+        { once: true },
+      )
+    }
+  })
 }
 
 async function handleSubmit() {

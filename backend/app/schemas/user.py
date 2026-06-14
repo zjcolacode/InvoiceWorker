@@ -12,6 +12,8 @@ class UserCreate(BaseModel):
     email: Optional[str] = None
     role: str = Field(default="operator", pattern="^(admin|operator|viewer)$")
     menu_permissions: Optional[List[str]] = None
+    full_name: str | None = None
+    position: str | None = None
 
 
 class UserLogin(BaseModel):
@@ -29,6 +31,8 @@ class UserResponse(BaseModel):
     is_active: bool
     menu_permissions: Optional[List[str]] = None
     created_at: Optional[datetime] = None
+    full_name: str | None = None
+    position: str | None = None
 
     @field_validator("menu_permissions", mode="before")
     @classmethod
@@ -57,6 +61,8 @@ class UserUpdate(BaseModel):
     role: Optional[str] = Field(default=None, pattern="^(admin|operator|viewer)$")
     is_active: Optional[bool] = None
     password: Optional[str] = Field(default=None, min_length=6, max_length=128)
+    full_name: str | None = None
+    position: str | None = None
 
 
 class UserPermissionsUpdate(BaseModel):

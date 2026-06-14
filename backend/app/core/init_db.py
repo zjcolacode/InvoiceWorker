@@ -86,6 +86,75 @@ def _ensure_email_messages_uid_column() -> None:
         logger.warning(f"检查/补充 email_messages.message_uid 列失败（可忽略）: {e}")
 
 
+def _ensure_invoice_reimbursement_columns() -> None:
+    """为已有 invoices 表补充 is_reimbursed 和 reimbursed_at 列（SQLite 兼容的轻量迁移）。"""
+    try:
+        with engine.connect() as conn:
+            dialect = engine.dialect.name
+            if dialect == "sqlite":
+                rows = conn.execute(text("PRAGMA table_info(invoices)")).fetchall()
+                if not rows:
+                    return
+                columns = {row[1] for row in rows}
+                if "is_reimbursed" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE invoices ADD COLUMN is_reimbursed BOOLEAN DEFAULT 0 NOT NULL"
+                    ))
+                    conn.commit()
+                    logger.info("已为 invoices 表补充 is_reimbursed 列")
+                if "reimbursed_at" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE invoices ADD COLUMN reimbursed_at DATETIME"
+                    ))
+                    conn.commit()
+                    logger.info("已为 invoices 表补充 reimbursed_at 列")
+            else:
+                try:
+                    conn.execute(text(
+                        "ALTER TABLE invoices ADD COLUMN is_reimbursed BOOLEAN DEFAULT FALSE NOT NULL"
+                    ))
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text(
+                        "ALTER TABLE invoices ADD COLUMN reimbursed_at DATETIME"
+                    ))
+                    conn.commit()
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"检查/补充 invoices 核销列失败（可忽略）: {e}")
+
+
+def _ensure_invoice_detail_reimburse_status_column() -> None:
+    """为已有 invoice_details 表补充 reimburse_status 列（SQLite 兼容的轻量迁移）。"""
+    try:
+        with engine.connect() as conn:
+            dialect = engine.dialect.name
+            if dialect == "sqlite":
+                rows = conn.execute(text("PRAGMA table_info(invoice_details)")).fetchall()
+                if not rows:
+                    return
+                columns = {row[1] for row in rows}
+                if "reimburse_status" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE invoice_details ADD COLUMN reimburse_status VARCHAR(20) DEFAULT '待报销'"
+                    ))
+                    conn.commit()
+                    logger.info("已为 invoice_details 表补充 reimburse_status 列")
+            else:
+                try:
+                    conn.execute(text(
+                        "ALTER TABLE invoice_details ADD COLUMN reimburse_status VARCHAR(20) DEFAULT '待报销'"
+                    ))
+                    conn.commit()
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"检查/补充 invoice_details.reimburse_status 列失败（可忽略）: {e}")
+
+
 def _deduplicate_email_messages() -> None:
     """清理 email_messages 表中的重复数据
 
@@ -135,11 +204,35 @@ def _deduplicate_email_messages() -> None:
         db.close()
 
 
+def _ensure_invoice_details_schema() -> None:
+    """检测旧版 invoice_details 表结构（含已移除的 27 列字段）并重建。
+
+    SQLite 不支持 DROP COLUMN，如果检测到表中还保留着 ``tax_category_code`` 等
+    旧字段，直接 DROP 该表，在后续 Base.metadata.create_all() 时会以新结构重建。
+    本函数需在 create_all 之前调用。
+    """
+    try:
+        from sqlalchemy import inspect as sa_inspect
+        inspector = sa_inspect(engine)
+        if "invoice_details" not in inspector.get_table_names():
+            return
+        columns = [c["name"] for c in inspector.get_columns("invoice_details")]
+        if "tax_category_code" in columns:
+            with engine.connect() as conn:
+                conn.execute(text("DROP TABLE IF EXISTS invoice_details"))
+                conn.commit()
+            logger.info("检测到 invoice_details 表为旧结构，已删除以供重建为 19 列新结构")
+    except Exception as e:
+        logger.warning(f"检测/重建 invoice_details 表结构失败（可忽略）: {e}")
+
+
 def init_db() -> None:
     """初始化数据库，创建默认admin用户并进行必要的表结构迁移"""
     _ensure_invoice_file_hash_column()
     _ensure_user_menu_permissions_column()
     _ensure_email_messages_uid_column()
+    _ensure_invoice_reimbursement_columns()
+    _ensure_invoice_detail_reimburse_status_column()
     _deduplicate_email_messages()
     db: Session = SessionLocal()
     try:
