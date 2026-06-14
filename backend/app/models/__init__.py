@@ -9,7 +9,7 @@ from app.models.reimbursement import ReimbursementRecord
 from app.models.invoice_detail import InvoiceDetail, InvoiceDetailUploadLog
 from app.models.reimb_email import ReimbEmailConfig, ReimbEmailMessage, ReimbEmailFetchLog
 from app.models.manual_match import ManualMatchRecord
-from app.models.reimbursement_application import ReimbursementApplication
+from app.models.reimbursement_application import ReimbursementApplication, ReimbursementApplicationDetail
 
 __all__ = [
     "User",
@@ -27,4 +27,5 @@ __all__ = [
     "ReimbEmailFetchLog",
     "ManualMatchRecord",
     "ReimbursementApplication",
+    "ReimbursementApplicationDetail",
 ]

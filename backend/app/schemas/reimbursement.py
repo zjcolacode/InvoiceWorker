@@ -209,6 +209,15 @@ class ManualMatchRecordResponse(BaseModel):
 # 报销申请单 - Schema
 # ============================================================
 
+class ReimbursementDetailItem(BaseModel):
+    """报销明细行请求体"""
+    date: Optional[str] = None        # 发生日期
+    content: Optional[str] = None     # 报销内容
+    receipt_count: int = 1            # 单据张数
+    amount: float = 0.0               # 金额
+    remark: Optional[str] = None      # 备注
+
+
 class ReimbursementApplicationCreate(BaseModel):
     """创建报销申请的请求体"""
     reimburse_date: str  # YYYY-MM-DD
@@ -217,6 +226,21 @@ class ReimbursementApplicationCreate(BaseModel):
     reason: str
     remark: Optional[str] = None
     invoice_ids: list[int]
+    detail_items: list[ReimbursementDetailItem] = []  # 新增：明细行列表
+
+
+class ReimbursementDetailResponse(BaseModel):
+    """报销明细响应"""
+    id: int
+    application_id: int
+    date: Optional[str] = None
+    content: Optional[str] = None
+    receipt_count: int = 1
+    amount: float = 0.0
+    remark: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 
 class ReimbursementApplicationResponse(BaseModel):

@@ -125,9 +125,9 @@
           </el-table-column>
           <el-table-column label="操作" width="240" align="right">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" :loading="testingId === row.id" @click="handleTestConnection(row)">测试</el-button>
-              <el-button link type="primary" size="small" @click="openEditEmail(row)">编辑</el-button>
-              <el-button link type="danger" size="small" @click="handleDeleteEmail(row)">删除</el-button>
+              <el-button link type="primary" size="small" :loading="testingId === row.id" @click="handleTestConnection(row as ReimbEmailConfig)">测试</el-button>
+              <el-button link type="primary" size="small" @click="openEditEmail(row as ReimbEmailConfig)">编辑</el-button>
+              <el-button link type="danger" size="small" @click="handleDeleteEmail(row as ReimbEmailConfig)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -195,12 +195,41 @@
     <template v-if="activeStep === 3">
       <el-card shadow="never" style="margin-top: 16px">
         <el-alert type="success" :closable="false" show-icon title="已核销发票基础信息表 - 展示所有已完成匹配核销的发票数据" style="margin-bottom: 16px" />
+        <el-form :inline="true" :model="matchedFilter" class="matched-filter-form" style="margin-bottom: 16px">
+          <el-form-item label="开票日期">
+            <el-date-picker v-model="matchedFilter.dateRange" type="daterange" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" value-format="YYYY-MM-DD" style="width: 260px" />
+          </el-form-item>
+          <el-form-item label="销方名称">
+            <el-input v-model="matchedFilter.sellerName" placeholder="输入销方名称" clearable style="width: 200px" />
+          </el-form-item>
+          <el-form-item label="报销状态">
+            <el-select v-model="matchedFilter.reimburseStatus" placeholder="全部状态" clearable style="width: 150px">
+              <el-option label="全部" value="" />
+              <el-option label="待报销" value="待报销" />
+              <el-option label="已报销" value="已报销" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="发票票种">
+            <el-select v-model="matchedFilter.invoiceType" placeholder="全部票种" clearable style="width: 180px">
+              <el-option v-for="opt in matchedInvoiceTypeOptions" :key="opt" :label="opt" :value="opt" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="核销方式">
+            <el-select v-model="matchedFilter.matchMethod" placeholder="全部方式" clearable style="width: 150px">
+              <el-option v-for="opt in matchedMethodOptions" :key="opt" :label="opt" :value="opt" />
+            </el-select>
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" @click="handleMatchedFilterSearch"><el-icon><Search /></el-icon> 查询</el-button>
+            <el-button @click="handleMatchedFilterReset"><el-icon><Refresh /></el-icon> 重置</el-button>
+          </el-form-item>
+        </el-form>
         <div style="display: flex; justify-content: flex-end; margin-bottom: 12px;">
           <el-button type="primary" @click="handleSubmitReimburse" :loading="submittingReimburse">
             报销提交
           </el-button>
         </div>
-        <el-table ref="matchedTableRef" v-loading="matchedLoading" :data="matchedInvoices" stripe empty-text="暂无已核销发票数据" style="width: 100%">
+        <el-table ref="matchedTableRef" v-loading="matchedLoading" :data="filteredMatchedInvoices" stripe empty-text="暂无已核销发票数据" style="width: 100%">
           <el-table-column type="selection" width="50" />
           <el-table-column prop="digital_invoice_no" label="数电发票号码" width="200" show-overflow-tooltip>
             <template #default="{ row }">{{ row.digital_invoice_no || row.invoice_no || '-' }}</template>
@@ -242,7 +271,7 @@
           </el-table-column>
         </el-table>
         <div class="pagination-wrap">
-          <el-pagination v-model:current-page="matchedPagination.page" v-model:page-size="matchedPagination.pageSize" :total="matchedPagination.total" :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next" @size-change="loadMatchedInvoices" @current-change="loadMatchedInvoices" />
+          <el-pagination v-model:current-page="matchedPagination.page" v-model:page-size="matchedPagination.pageSize" :total="matchedPaginationTotal" :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next" @size-change="loadMatchedInvoices" @current-change="loadMatchedInvoices" />
         </div>
       </el-card>
     </template>
@@ -659,14 +688,12 @@ import {
   getReimbEmailMessages,
   getReimbEmailFetchLogs,
   type ReimbEmailConfig,
-  type ReimbEmailConfigCreate,
   type ReimbEmailMessage,
   type ReimbEmailFetchLog,
   type ReimbEmailTestResult,
   type ReimbEmailFetchResult,
   manualMatchInvoice,
   getManualMatchRecords,
-  submitReimburse,
   createReimburseApplication,
   getReimburseApplications,
   type ManualMatchResult,
@@ -1054,6 +1081,76 @@ const matchedPagination = reactive({ page: 1, pageSize: 20, total: 0 })
 const matchedTableRef = ref<any>(null)
 const submittingReimburse = ref(false)
 
+// 步骤4 已核销发票表格客户端过滤
+const matchedFilter = reactive<{ dateRange: string[] | null; sellerName: string; invoiceType: string; matchMethod: string; reimburseStatus: string }>({
+  dateRange: null,
+  sellerName: '',
+  invoiceType: '',
+  matchMethod: '',
+  reimburseStatus: ''
+})
+
+const matchedInvoiceTypeOptions = computed(() => {
+  const set = new Set<string>()
+  matchedInvoices.value.forEach((it) => { if (it.invoice_type) set.add(String(it.invoice_type)) })
+  // 兜底常见票种
+  if (set.size === 0) {
+    return ['数电发票（普通）', '数电发票（增值税专用）', '增值税专用发票', '增值税普通发票', '电子普通发票']
+  }
+  return Array.from(set)
+})
+
+const matchedMethodOptions = computed(() => {
+  const set = new Set<string>()
+  matchedInvoices.value.forEach((it) => { if (it.match_method) set.add(String(it.match_method)) })
+  if (set.size === 0) return ['邮箱匹配', '手工匹配']
+  return Array.from(set)
+})
+
+const filteredMatchedInvoices = computed(() => {
+  const { dateRange, sellerName, invoiceType, matchMethod, reimburseStatus } = matchedFilter
+  const startDate = dateRange && dateRange[0] ? dateRange[0] : ''
+  const endDate = dateRange && dateRange[1] ? dateRange[1] : ''
+  const sellerKey = sellerName.trim().toLowerCase()
+  return matchedInvoices.value.filter((row) => {
+    if (startDate || endDate) {
+      const d = (row.invoice_date || '').substring(0, 10)
+      if (!d) return false
+      if (startDate && d < startDate) return false
+      if (endDate && d > endDate) return false
+    }
+    if (sellerKey) {
+      const seller = String(row.seller_name || '').toLowerCase()
+      if (!seller.includes(sellerKey)) return false
+    }
+    if (invoiceType && row.invoice_type !== invoiceType) return false
+    if (matchMethod && row.match_method !== matchMethod) return false
+    if (reimburseStatus && row.reimburse_status !== reimburseStatus) return false
+    return true
+  })
+})
+
+const matchedFilterActive = computed(() => {
+  const { dateRange, sellerName, invoiceType, matchMethod, reimburseStatus } = matchedFilter
+  return Boolean((dateRange && (dateRange[0] || dateRange[1])) || sellerName || invoiceType || matchMethod || reimburseStatus)
+})
+
+const matchedPaginationTotal = computed(() => {
+  return matchedFilterActive.value ? filteredMatchedInvoices.value.length : matchedPagination.total
+})
+
+function handleMatchedFilterSearch() {
+  // 客户端过滤无需请求后端，computed 自动响应
+}
+
+function handleMatchedFilterReset() {
+  matchedFilter.dateRange = null
+  matchedFilter.sellerName = ''
+  matchedFilter.invoiceType = ''
+  matchedFilter.matchMethod = ''
+  matchedFilter.reimburseStatus = ''
+}
+
 async function loadMatchedInvoices() {
   matchedLoading.value = true
   try {
@@ -1145,8 +1242,6 @@ const reimburseItems = ref<ReimburseItem[]>([
   { date: '', content: '', receipt_count: 1, amount: 0, remark: '' }
 ])
 
-const expenseContentOptions = ['住宿费', '餐费', '油费', '交通费', '办公用品', '通讯费', '差旅费', '业务招待', '培训费', '其他']
-
 function addReimburseRow() {
   reimburseItems.value.push({ date: '', content: '', receipt_count: 1, amount: 0, remark: '' })
 }
@@ -1165,7 +1260,6 @@ const reimburseItemsTotal = computed(() => {
 })
 
 const departmentOptions = ['财务部', '技术部', '市场部', '人事部', '行政部', '研发部']
-const categoryOptions = ['差旅费', '办公用品', '业务招待', '交通费', '通讯费', '培训费', '其他']
 
 const reimburseRules: FormRules = {
   reimburse_date: [{ required: true, message: '请选择报销日期', trigger: 'change' }],
@@ -1194,8 +1288,15 @@ async function handleReimburseSubmit() {
       department: reimburseFormData.department,
       category: summary,
       reason: summary,
-      remark: JSON.stringify(reimburseItems.value.filter(i => i.content || i.amount)),
+      remark: reimburseFormData.remark || undefined,
       invoice_ids: ids,
+      detail_items: reimburseItems.value.map(i => ({
+        date: i.date,
+        content: i.content,
+        receipt_count: i.receipt_count,
+        amount: i.amount,
+        remark: i.remark,
+      })),
     })
     ElMessage.success(`报销申请提交成功！报销单编号：${res.reimburse_no}`)
     reimburseDialogVisible.value = false

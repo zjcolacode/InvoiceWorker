@@ -150,6 +150,15 @@ export function submitReimburse(ids: number[]) {
 // 报销申请
 // ============================================================
 
+/** 报销申请明细项 */
+export interface ReimburseDetailItem {
+  date?: string
+  content?: string
+  receipt_count: number
+  amount: number
+  remark?: string
+}
+
 /** 报销申请创建参数 */
 export interface ReimburseApplicationCreate {
   reimburse_date: string
@@ -158,6 +167,7 @@ export interface ReimburseApplicationCreate {
   reason: string
   remark?: string
   invoice_ids: number[]
+  detail_items: ReimburseDetailItem[]
 }
 
 /** 报销申请响应 */

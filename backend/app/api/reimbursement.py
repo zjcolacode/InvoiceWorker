@@ -35,7 +35,7 @@ from app.models.invoice_detail import InvoiceDetail, InvoiceDetailUploadLog
 from app.models.manual_match import ManualMatchRecord
 from app.models.reimb_email import ReimbEmailConfig, ReimbEmailFetchLog, ReimbEmailMessage
 from app.models.reimbursement import ReimbursementRecord
-from app.models.reimbursement_application import ReimbursementApplication
+from app.models.reimbursement_application import ReimbursementApplication, ReimbursementApplicationDetail
 from app.models.user import User
 from app.schemas.reimbursement import (
     InvoiceDetailListResponse,
@@ -1458,6 +1458,19 @@ async def create_reimburse_application(
         submitted_by=current_user.id,
     )
     db.add(application)
+    db.flush()  # 获取生成的ID
+
+    # 批量创建明细记录
+    for item in payload.detail_items:
+        detail = ReimbursementApplicationDetail(
+            application_id=application.id,
+            date=item.date,
+            content=item.content,
+            receipt_count=item.receipt_count,
+            amount=item.amount,
+            remark=item.remark,
+        )
+        db.add(detail)
 
     # 更新发票的报销状态
     for inv in invoices:
@@ -1481,6 +1494,38 @@ async def create_reimburse_application(
         "status": application.status,
         "created_at": application.created_at.isoformat() if application.created_at else None,
     }
+
+
+@router.get("/reimburse-applications/{application_id}/details")
+async def get_reimburse_application_details(
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """获取报销申请的明细记录"""
+    # 验证主表记录存在
+    application = db.query(ReimbursementApplication).filter(
+        ReimbursementApplication.id == application_id
+    ).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="报销申请不存在")
+
+    details = db.query(ReimbursementApplicationDetail).filter(
+        ReimbursementApplicationDetail.application_id == application_id
+    ).all()
+
+    return [
+        {
+            "id": d.id,
+            "application_id": d.application_id,
+            "date": d.date,
+            "content": d.content,
+            "receipt_count": d.receipt_count,
+            "amount": d.amount,
+            "remark": d.remark,
+        }
+        for d in details
+    ]
 
 
 @router.get("/manual-match-records")
@@ -1562,24 +1607,26 @@ async def reset_all_detail_data(
     3. invoice_details            - 全量发票明细
     4. invoice_detail_upload_logs - 上传日志
     """
-    from app.models.reimbursement_application import ReimbursementApplication
+    from app.models.reimbursement_application import ReimbursementApplication, ReimbursementApplicationDetail
     from app.models.manual_match import ManualMatchRecord
     from app.models.invoice_detail import InvoiceDetail, InvoiceDetailUploadLog
 
     try:
         # 按外键依赖顺序删除
+        r0 = db.query(ReimbursementApplicationDetail).delete()
         r1 = db.query(ReimbursementApplication).delete()
         r2 = db.query(ManualMatchRecord).delete()
         r3 = db.query(InvoiceDetail).delete()
         r4 = db.query(InvoiceDetailUploadLog).delete()
         db.commit()
         logger.info(
-            "[reset-all] 已清空数据: 报销申请=%d, 手工匹配=%d, 发票明细=%d, 上传日志=%d",
-            r1, r2, r3, r4,
+            "[reset-all] 已清空数据: 报销明细=%d, 报销申请=%d, 手工匹配=%d, 发票明细=%d, 上传日志=%d",
+            r0, r1, r2, r3, r4,
         )
         return {
             "message": "数据清空完成",
             "deleted": {
+                "reimbursement_application_details": r0,
                 "reimbursement_applications": r1,
                 "manual_match_records": r2,
                 "invoice_details": r3,

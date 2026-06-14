@@ -24,3 +24,17 @@ class ReimbursementApplication(Base):
     status = Column(String(20), default="已提交")  # 状态：已提交/审批中/已通过/已拒绝
     submitted_by = Column(Integer, nullable=True)  # 提交人用户ID
     created_at = Column(DateTime, server_default=func.now())
+
+
+class ReimbursementApplicationDetail(Base):
+    """报销申请明细行"""
+
+    __tablename__ = "reimbursement_application_details"
+
+    id = Column(Integer, primary_key=True, index=True)
+    application_id = Column(Integer, nullable=False, index=True)  # 关联主表ID
+    date = Column(String(20), nullable=True)  # 发生日期
+    content = Column(String(200), nullable=True)  # 报销内容
+    receipt_count = Column(Integer, default=1)  # 单据张数
+    amount = Column(Float, default=0.0)  # 金额
+    remark = Column(Text, nullable=True)  # 备注
