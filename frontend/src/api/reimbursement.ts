@@ -216,6 +216,14 @@ export function getReimburseApplications(params: { page: number; page_size: numb
   )
 }
 
+/** 导出报销申请PDF */
+export function exportReimburseApplicationPdf(applicationId: number) {
+  return request.get(`/api/reimbursement/reimburse-applications/${applicationId}/export-pdf`, {
+    responseType: 'blob',
+    timeout: 60000,
+  })
+}
+
 /**
  * 分页查询上传历史
  */

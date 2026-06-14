@@ -394,7 +394,7 @@
       <template #header>
         <div style="display:flex; align-items:center; gap:8px; cursor:pointer;" @click="reimbRecordsCollapsed = !reimbRecordsCollapsed">
           <el-icon :style="{ transform: reimbRecordsCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }"><ArrowDown /></el-icon>
-          <span style="font-weight: bold;">报销单管理记录</span>
+          <span style="font-weight: bold;">报销申请记录</span>
         </div>
       </template>
       <div v-show="!reimbRecordsCollapsed">
@@ -413,6 +413,13 @@
           </el-table-column>
           <el-table-column prop="created_at" label="提交时间" width="180">
             <template #default="{ row }">{{ row.created_at ? formatTime(row.created_at) : '-' }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="100" fixed="right" align="center">
+            <template #default="{ row }">
+              <el-button type="primary" link size="small" :loading="row._exporting" @click="handleExportPDF(row)">
+                导出
+              </el-button>
+            </template>
           </el-table-column>
         </el-table>
         <div class="pagination-wrap">
@@ -696,6 +703,7 @@ import {
   getManualMatchRecords,
   createReimburseApplication,
   getReimburseApplications,
+  exportReimburseApplicationPdf,
   type ManualMatchResult,
   type ManualMatchRecord as ManualMatchRecordType,
 } from '@/api/reimbursement'
@@ -1056,6 +1064,29 @@ async function loadReimbApplications() {
     reimbApplications.value = res.items || []
     reimbApplicationsPagination.total = res.total || 0
   } catch { /* */ } finally { reimbApplicationsLoading.value = false }
+}
+
+/** 导出报销申请PDF */
+async function handleExportPDF(row: any) {
+  try {
+    row._exporting = true
+    const res = await exportReimburseApplicationPdf(row.id)
+    // 创建下载链接
+    const blob = new Blob([res as any], { type: 'application/pdf' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `报销单_${row.reimburse_no}.pdf`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '导出失败，请重试')
+  } finally {
+    row._exporting = false
+  }
 }
 
 // 手工匹配记录

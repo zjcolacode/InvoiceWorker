@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from openpyxl import load_workbook
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
+from starlette.responses import StreamingResponse
 
 try:
     import fitz  # PyMuPDF
@@ -1526,6 +1527,363 @@ async def get_reimburse_application_details(
         }
         for d in details
     ]
+
+
+# ============================================================
+# 报销申请单 PDF 导出
+# ============================================================
+def _amount_to_chinese(amount: float) -> str:
+    """将金额数字转为中文大写。
+
+    示例:
+      68.00   -> 陆拾捌元整
+      17.00   -> 壹拾柒元整
+      123.45  -> 壹佰贰拾叁元肆角伍分
+      0       -> 零元整
+    """
+    if amount is None:
+        amount = 0.0
+    # 负数处理
+    negative = amount < 0
+    amount = abs(round(float(amount), 2))
+
+    digits = "零壹贰叁肆伍陆柒捌玖"
+    int_units = ["", "拾", "佰", "仟"]
+    big_units = ["", "万", "亿", "万亿"]
+
+    # 拆分整数与小数部分
+    int_part = int(amount)
+    frac_part = int(round((amount - int_part) * 100))
+    jiao = frac_part // 10
+    fen = frac_part % 10
+
+    # 整数部分转换
+    if int_part == 0:
+        int_str = "零"
+    else:
+        int_str = ""
+        section_idx = 0
+        n = int_part
+        while n > 0:
+            section = n % 10000
+            n //= 10000
+            if section == 0:
+                # 跳过全 0 节，但需保留一个零（除非已有零）
+                if not int_str.startswith("零") and int_str:
+                    int_str = "零" + int_str
+            else:
+                section_str = ""
+                has_zero = False
+                for pos in range(4):
+                    d = section % 10
+                    section //= 10
+                    if d == 0:
+                        has_zero = True
+                    else:
+                        if has_zero:
+                            section_str = "零" + section_str
+                            has_zero = False
+                        section_str = digits[d] + int_units[pos] + section_str
+                int_str = section_str + big_units[section_idx] + int_str
+            section_idx += 1
+        # 清理首尾多余的「零」
+        int_str = int_str.strip("零")
+        # 合并连续多个「零」
+        while "零零" in int_str:
+            int_str = int_str.replace("零零", "零")
+
+    # 拼接
+    if jiao == 0 and fen == 0:
+        result = f"{int_str}元整"
+    else:
+        result = f"{int_str}元"
+        if jiao > 0:
+            result += f"{digits[jiao]}角"
+        elif fen > 0 and int_part > 0:
+            # 元后有分但无角，需补「零」
+            result += "零"
+        if fen > 0:
+            result += f"{digits[fen]}分"
+        else:
+            result += "整" if jiao > 0 else ""
+
+    if negative:
+        result = "负" + result
+    return result
+
+
+@router.get("/reimburse-applications/{application_id}/export-pdf")
+async def export_reimburse_application_pdf(
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """导出报销单PDF（A4竖版，传统报销单格式）。"""
+    application = db.query(ReimbursementApplication).filter(
+        ReimbursementApplication.id == application_id
+    ).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="报销申请不存在")
+
+    details = db.query(ReimbursementApplicationDetail).filter(
+        ReimbursementApplicationDetail.application_id == application_id
+    ).order_by(ReimbursementApplicationDetail.id.asc()).all()
+
+    # ---------- 延迟引入 reportlab，避免冷启动开销 ----------
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.platypus import (
+        SimpleDocTemplate,
+        Paragraph,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+
+    # 注册中文 CID 字体（无需外部字体文件）
+    font_name = "STSong-Light"
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+    except Exception:
+        # 已注册时再次注册会抛错，可忽略
+        pass
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
+        title=f"报销单_{application.reimburse_no}",
+    )
+
+    # 样式
+    title_style = ParagraphStyle(
+        name="TitleCN", fontName=font_name, fontSize=24,
+        alignment=TA_CENTER, leading=30, spaceAfter=4,
+    )
+    no_style = ParagraphStyle(
+        name="NoCN", fontName=font_name, fontSize=10,
+        alignment=TA_RIGHT, textColor=colors.HexColor("#444444"),
+    )
+    cell_style = ParagraphStyle(
+        name="CellCN", fontName=font_name, fontSize=10,
+        alignment=TA_LEFT, leading=14,
+    )
+    cell_center = ParagraphStyle(
+        name="CellCenter", fontName=font_name, fontSize=10,
+        alignment=TA_CENTER, leading=14,
+    )
+    cell_right = ParagraphStyle(
+        name="CellRight", fontName=font_name, fontSize=10,
+        alignment=TA_RIGHT, leading=14,
+    )
+    label_style = ParagraphStyle(
+        name="LabelCN", fontName=font_name, fontSize=10,
+        alignment=TA_LEFT, leading=14,
+    )
+
+    story = []
+
+    # ---------- 标题区 ----------
+    story.append(Paragraph(f"单据编号：{application.reimburse_no or ''}", no_style))
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("报 销 单", title_style))
+    story.append(Spacer(1, 4 * mm))
+
+    # ---------- 基础信息区（两行四列 表格） ----------
+    info_data = [
+        [
+            Paragraph("申请人", label_style),
+            Paragraph(application.applicant_name or "", cell_style),
+            Paragraph("部门", label_style),
+            Paragraph(application.department or "", cell_style),
+        ],
+        [
+            Paragraph("报销日期", label_style),
+            Paragraph(application.reimburse_date or "", cell_style),
+            Paragraph("报销类别", label_style),
+            Paragraph(application.category or "", cell_style),
+        ],
+        [
+            Paragraph("事由", label_style),
+            Paragraph(application.reason or "", cell_style),
+            "",
+            "",
+        ],
+    ]
+    info_table = Table(
+        info_data,
+        colWidths=[22 * mm, 50 * mm, 22 * mm, 65 * mm],
+    )
+    info_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#7BAE7B")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#E8F4E8")),
+        ("BACKGROUND", (2, 0), (2, 1), colors.HexColor("#E8F4E8")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("SPAN", (1, 2), (3, 2)),  # 事由跨3列
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(info_table)
+    story.append(Spacer(1, 4 * mm))
+
+    # ---------- 明细表格 ----------
+    detail_header = [
+        Paragraph("日期", cell_center),
+        Paragraph("报销项目简介", cell_center),
+        Paragraph("单据张数", cell_center),
+        Paragraph("金额（元）", cell_center),
+        Paragraph("备注", cell_center),
+    ]
+    detail_rows = [detail_header]
+    total_amount = 0.0
+    total_count = 0
+    for d in details:
+        amt = float(d.amount or 0.0)
+        cnt = int(d.receipt_count or 0)
+        total_amount += amt
+        total_count += cnt
+        detail_rows.append([
+            Paragraph(d.date or "", cell_center),
+            Paragraph(d.content or "", cell_style),
+            Paragraph(str(cnt) if cnt else "", cell_center),
+            Paragraph(f"{amt:.2f}", cell_right),
+            Paragraph(d.remark or "", cell_style),
+        ])
+
+    # 若明细少于 5 行，补空行以保持版式美观
+    while len(detail_rows) - 1 < 5:
+        detail_rows.append(["", "", "", "", ""])
+
+    # 使用主表 total_amount 作为最终合计（与数据库一致）
+    final_total = float(application.total_amount or total_amount or 0.0)
+    detail_rows.append([
+        Paragraph("合计", cell_center),
+        Paragraph(f"金额大写：{_amount_to_chinese(final_total)}", cell_style),
+        Paragraph(str(total_count) if total_count else "", cell_center),
+        Paragraph(f"{final_total:.2f}", cell_right),
+        Paragraph("", cell_style),
+    ])
+
+    detail_table = Table(
+        detail_rows,
+        colWidths=[24 * mm, 60 * mm, 20 * mm, 25 * mm, 30 * mm],
+        repeatRows=1,
+    )
+    detail_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#7BAE7B")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#C8E6C9")),
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#E8F4E8")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    story.append(detail_table)
+    story.append(Spacer(1, 3 * mm))
+
+    # ---------- 金额大写 + 备注行 ----------
+    summary_data = [
+        [
+            Paragraph("金额合计（大写）", label_style),
+            Paragraph(_amount_to_chinese(final_total), cell_style),
+            Paragraph("￥", label_style),
+            Paragraph(f"{final_total:.2f}", cell_right),
+        ],
+    ]
+    if application.remark:
+        summary_data.append([
+            Paragraph("备注", label_style),
+            Paragraph(application.remark, cell_style),
+            "",
+            "",
+        ])
+    summary_table = Table(
+        summary_data,
+        colWidths=[32 * mm, 80 * mm, 12 * mm, 35 * mm],
+    )
+    summary_styles = [
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#7BAE7B")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#E8F4E8")),
+        ("BACKGROUND", (2, 0), (2, 0), colors.HexColor("#E8F4E8")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]
+    if application.remark:
+        summary_styles.append(("SPAN", (1, 1), (3, 1)))
+    summary_table.setStyle(TableStyle(summary_styles))
+    story.append(summary_table)
+    story.append(Spacer(1, 8 * mm))
+
+    # ---------- 签字区 ----------
+    sign_data = [
+        [
+            Paragraph("部门经理：", cell_style),
+            Paragraph("副总经理：", cell_style),
+            Paragraph("报销人：", cell_style),
+        ],
+        ["", "", ""],
+        [
+            Paragraph("财务经理：", cell_style),
+            Paragraph("总  经  理：", cell_style),
+            Paragraph("报销人签字：", cell_style),
+        ],
+        ["", "", ""],
+    ]
+    sign_table = Table(
+        sign_data,
+        colWidths=[53 * mm, 53 * mm, 53 * mm],
+        rowHeights=[7 * mm, 12 * mm, 7 * mm, 12 * mm],
+    )
+    sign_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(sign_table)
+
+    # ---------- 生成并返回 ----------
+    try:
+        doc.build(story)
+    except Exception as exc:
+        logger.exception("[export-pdf] 生成报销单PDF失败 application_id=%s", application_id)
+        raise HTTPException(status_code=500, detail=f"生成PDF失败: {exc}")
+
+    buffer.seek(0)
+    # 文件名使用报销单号（避免中文 URL 编码问题，使用 RFC5987）
+    raw_name = f"报销单_{application.reimburse_no or application.id}.pdf"
+    from urllib.parse import quote
+    encoded_name = quote(raw_name)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{encoded_name}"; filename*=UTF-8\'\'{encoded_name}',
+    }
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers=headers,
+    )
 
 
 @router.get("/manual-match-records")
