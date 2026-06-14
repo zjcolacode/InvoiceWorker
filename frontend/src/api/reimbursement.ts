@@ -185,6 +185,27 @@ export function createReimburseApplication(data: ReimburseApplicationCreate) {
   )
 }
 
+/** 获取报销申请记录列表 */
+export interface ReimburseApplicationListItem {
+  id: number
+  reimburse_no: string
+  applicant_name: string
+  applicant_position?: string | null
+  reimburse_date?: string | null
+  department?: string | null
+  category?: string | null
+  total_amount?: number | null
+  status?: string | null
+  created_at?: string | null
+}
+
+export function getReimburseApplications(params: { page: number; page_size: number }) {
+  return request.get<unknown, { total: number; page: number; page_size: number; items: ReimburseApplicationListItem[] }>(
+    '/api/reimbursement/reimburse-applications',
+    { params },
+  )
+}
+
 /**
  * 分页查询上传历史
  */

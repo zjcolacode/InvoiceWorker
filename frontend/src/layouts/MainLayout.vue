@@ -115,7 +115,7 @@ const allMenus: MenuItem[] = [
   { path: '/print', title: '打印管理', icon: Printer },
   { path: '/users', title: '用户管理', icon: User, roles: ['admin'] },
   { path: '/categories', title: '分类管理', icon: Collection, roles: ['admin', 'operator'] },
-  { path: '/reimbursement', title: '报销单管理', icon: Ticket },
+  { path: '/reimbursement', title: '数电发票报销', icon: Ticket },
 ]
 
 // admin 看到全量菜单；其他角色仅看到被分配的菜单

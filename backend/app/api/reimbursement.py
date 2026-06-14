@@ -1511,3 +1511,82 @@ async def list_manual_match_records(
             created_at=_to_iso(r.created_at),
         ))
     return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+@router.get("/reimburse-applications")
+async def list_reimburse_applications(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """获取报销申请记录列表（分页）。"""
+    query = db.query(ReimbursementApplication)
+    total = query.count()
+    records = (
+        query.order_by(ReimbursementApplication.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    items = []
+    for r in records:
+        items.append({
+            "id": r.id,
+            "reimburse_no": r.reimburse_no,
+            "applicant_name": r.applicant_name,
+            "applicant_position": r.applicant_position,
+            "reimburse_date": r.reimburse_date,
+            "department": r.department,
+            "category": r.category,
+            "total_amount": r.total_amount,
+            "status": r.status,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+    return {"total": total, "page": page, "page_size": page_size, "items": items}
+
+
+# ============================================================
+# 开发/测试辅助：清空全量发票明细及相关关联数据
+# ============================================================
+@router.post("/reset-all-detail-data")
+async def reset_all_detail_data(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """【仅开发测试使用】清空全量发票明细及所有关联数据。
+
+    清理顺序（遵循外键依赖）：
+    1. reimbursement_applications  - 报销申请记录
+    2. manual_match_records       - 手工匹配记录
+    3. invoice_details            - 全量发票明细
+    4. invoice_detail_upload_logs - 上传日志
+    """
+    from app.models.reimbursement_application import ReimbursementApplication
+    from app.models.manual_match import ManualMatchRecord
+    from app.models.invoice_detail import InvoiceDetail, InvoiceDetailUploadLog
+
+    try:
+        # 按外键依赖顺序删除
+        r1 = db.query(ReimbursementApplication).delete()
+        r2 = db.query(ManualMatchRecord).delete()
+        r3 = db.query(InvoiceDetail).delete()
+        r4 = db.query(InvoiceDetailUploadLog).delete()
+        db.commit()
+        logger.info(
+            "[reset-all] 已清空数据: 报销申请=%d, 手工匹配=%d, 发票明细=%d, 上传日志=%d",
+            r1, r2, r3, r4,
+        )
+        return {
+            "message": "数据清空完成",
+            "deleted": {
+                "reimbursement_applications": r1,
+                "manual_match_records": r2,
+                "invoice_details": r3,
+                "invoice_detail_upload_logs": r4,
+            },
+        }
+    except Exception as exc:
+        db.rollback()
+        logger.exception("[reset-all] 清空数据失败")
+        raise HTTPException(status_code=500, detail=f"清空数据失败: {exc}")

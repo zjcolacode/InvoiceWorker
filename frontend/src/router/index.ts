@@ -62,7 +62,7 @@ const routes: RouteRecordRaw[] = [
         path: 'reimbursement',
         name: 'Reimbursement',
         component: () => import('@/views/reimbursement/index.vue'),
-        meta: { title: '报销单管理', icon: 'Ticket' },
+        meta: { title: '数电发票报销', icon: 'Ticket' },
       },
     ],
   },

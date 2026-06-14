@@ -369,7 +369,26 @@
         </div>
       </template>
       <div v-show="!reimbRecordsCollapsed">
-        <el-empty description="暂无数据" />
+        <el-table :data="reimbApplications" v-loading="reimbApplicationsLoading" stripe empty-text="暂无报销申请记录">
+          <el-table-column prop="reimburse_no" label="报销单号" width="200" show-overflow-tooltip />
+          <el-table-column prop="applicant_name" label="申请人" width="100" />
+          <el-table-column prop="department" label="部门" width="100" />
+          <el-table-column prop="category" label="报销类别" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="total_amount" label="金额" width="120" align="right">
+            <template #default="{ row }"><span v-if="row.total_amount">¥ {{ formatAmount(row.total_amount) }}</span><span v-else>-</span></template>
+          </el-table-column>
+          <el-table-column prop="status" label="状态" width="100" align="center">
+            <template #default="{ row }">
+              <el-tag :type="row.status === '已通过' ? 'success' : row.status === '已拒绝' ? 'danger' : 'primary'" size="small">{{ row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="created_at" label="提交时间" width="180">
+            <template #default="{ row }">{{ row.created_at ? formatTime(row.created_at) : '-' }}</template>
+          </el-table-column>
+        </el-table>
+        <div class="pagination-wrap">
+          <el-pagination v-model:current-page="reimbApplicationsPagination.page" v-model:page-size="reimbApplicationsPagination.pageSize" :total="reimbApplicationsPagination.total" :page-sizes="[10, 20, 50]" layout="total, sizes, prev, pager, next" @size-change="loadReimbApplications" @current-change="loadReimbApplications" />
+        </div>
       </div>
     </el-card>
 
@@ -557,9 +576,7 @@
             </el-table-column>
             <el-table-column label="报销内容" min-width="160">
               <template #default="{ row }">
-                <el-select v-model="row.content" placeholder="选择类别" size="small" style="width:100%" allow-create filterable>
-                  <el-option v-for="c in expenseContentOptions" :key="c" :label="c" :value="c" />
-                </el-select>
+                <el-input v-model="row.content" placeholder="报销内容" size="small" style="width:100%" />
               </template>
             </el-table-column>
             <el-table-column label="单据张数" width="100">
@@ -651,6 +668,7 @@ import {
   getManualMatchRecords,
   submitReimburse,
   createReimburseApplication,
+  getReimburseApplications,
   type ManualMatchResult,
   type ManualMatchRecord as ManualMatchRecordType,
 } from '@/api/reimbursement'
@@ -674,7 +692,7 @@ const stepList = [
   { title: '上传全量发票基础信息表', desc: '上传Excel发票数据' },
   { title: '邮箱匹配', desc: '与邮件系统匹配核销' },
   { title: '手动匹配', desc: '多模态视觉识别' },
-  { title: '报销单管理', desc: '功能开发中' },
+  { title: '报销申请', desc: '提交报销申请单' },
 ]
 const activeStep = ref(0)
 
@@ -999,6 +1017,20 @@ async function handleManualMatchSubmit() {
   }
 }
 
+// 报销申请记录
+const reimbApplications = ref<any[]>([])
+const reimbApplicationsLoading = ref(false)
+const reimbApplicationsPagination = reactive({ page: 1, pageSize: 10, total: 0 })
+
+async function loadReimbApplications() {
+  reimbApplicationsLoading.value = true
+  try {
+    const res = await getReimburseApplications({ page: reimbApplicationsPagination.page, page_size: reimbApplicationsPagination.pageSize })
+    reimbApplications.value = res.items || []
+    reimbApplicationsPagination.total = res.total || 0
+  } catch { /* */ } finally { reimbApplicationsLoading.value = false }
+}
+
 // 手工匹配记录
 const manualMatchRecords = ref<ManualMatchRecordType[]>([])
 const manualMatchRecordsLoading = ref(false)
@@ -1050,7 +1082,39 @@ async function handleSubmitReimburse() {
   reimburseFormData.category = ''
   reimburseFormData.reason = ''
   reimburseFormData.remark = ''
-  reimburseItems.value = [{ date: '', content: '', receipt_count: 1, amount: 0, remark: '' }]
+  // 按"货物或应税劳务名称"分组汇总
+  const groupMap = new Map<string, { date: string; content: string; receipt_count: number; amount: number; remarks: Set<string> }>()
+  pendingItems.forEach((item: InvoiceDetailItem) => {
+    const groupKey = item.goods_or_service_name && String(item.goods_or_service_name).trim() !== '' ? String(item.goods_or_service_name) : '其他'
+    const invoiceDate = item.invoice_date ? String(item.invoice_date).substring(0, 10) : ''
+    const amountNum = Number(item.total_amount) || 0
+    const remarkStr = item.remark ? String(item.remark).trim() : ''
+    if (!groupMap.has(groupKey)) {
+      groupMap.set(groupKey, {
+        date: invoiceDate,
+        content: groupKey,
+        receipt_count: 1,
+        amount: amountNum,
+        remarks: new Set<string>(remarkStr ? [remarkStr] : [])
+      })
+    } else {
+      const g = groupMap.get(groupKey)!
+      if (invoiceDate && (!g.date || invoiceDate < g.date)) {
+        g.date = invoiceDate
+      }
+      g.receipt_count += 1
+      g.amount += amountNum
+      if (remarkStr) g.remarks.add(remarkStr)
+    }
+  })
+  const aggregated = Array.from(groupMap.values()).map(g => ({
+    date: g.date,
+    content: g.content,
+    receipt_count: g.receipt_count,
+    amount: Number(g.amount.toFixed(2)),
+    remark: Array.from(g.remarks).join('、')
+  }))
+  reimburseItems.value = aggregated.length > 0 ? aggregated : [{ date: '', content: '', receipt_count: 1, amount: 0, remark: '' }]
   reimburseDialogVisible.value = true
 }
 
@@ -1136,6 +1200,7 @@ async function handleReimburseSubmit() {
     ElMessage.success(`报销申请提交成功！报销单编号：${res.reimburse_no}`)
     reimburseDialogVisible.value = false
     await loadMatchedInvoices()
+    await loadReimbApplications()
   } catch (e) {
     console.error(e)
     ElMessage.error('报销申请提交失败，请重试')
@@ -1230,6 +1295,7 @@ watch(activeStep, (newStep) => {
     loadUnmatchedInvoices()
   } else if (newStep === 3) {
     loadMatchedInvoices()
+    loadReimbApplications()
   }
 })
 
@@ -1246,6 +1312,7 @@ onMounted(() => {
   loadUnmatchedInvoices()
   loadManualMatchRecords()
   loadMatchedInvoices()
+  loadReimbApplications()
 })
 </script>
 
