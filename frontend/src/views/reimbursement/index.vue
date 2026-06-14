@@ -51,6 +51,9 @@
           </el-table-column>
           <el-table-column prop="seller_name" label="销方名称" min-width="160" show-overflow-tooltip />
           <el-table-column prop="buyer_name" label="购买方名称" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="goods_or_service_name" label="货物或应税劳务名称" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.goods_or_service_name || '-' }}</template>
+          </el-table-column>
           <el-table-column prop="amount" label="金额" width="110" align="right">
             <template #default="{ row }"><span v-if="row.amount">¥ {{ formatAmount(row.amount) }}</span><span v-else>-</span></template>
           </el-table-column>
@@ -798,6 +801,7 @@ async function handleVerify() {
     ElMessage[res.matched_count > 0 ? 'success' : 'warning'](res.matched_count > 0 ? `核销完成，匹配 ${res.matched_count} 条` : '核销完成，未匹配到任何发票')
     await loadData()
     await loadVerifyRecords()
+    await loadUnmatchedInvoices()
   } catch (e) { console.error(e) } finally { verifying.value = false }
 }
 
@@ -1222,7 +1226,9 @@ watch(
 )
 
 watch(activeStep, (newStep) => {
-  if (newStep === 3) {
+  if (newStep === 2) {
+    loadUnmatchedInvoices()
+  } else if (newStep === 3) {
     loadMatchedInvoices()
   }
 })

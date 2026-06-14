@@ -42,6 +42,7 @@ class InvoiceDetail(Base):
     risk_level = Column(String(50), nullable=True)          # 发票风险等级
     issuer = Column(String(100), nullable=True)             # 开票人
     remark = Column(String(500), nullable=True)             # 备注
+    goods_or_service_name = Column(String(500), nullable=True)  # 货物或应税劳务名称
     verify_status = Column(String(20), default="待核销")    # 核销状态：待核销/已核销/未匹配
     verified_at = Column(DateTime, nullable=True)           # 核销时间
     match_method = Column(String(20), nullable=True)        # 邮箱匹配 / 手工匹配

@@ -371,6 +371,7 @@ def _detail_to_response(d: InvoiceDetail) -> InvoiceDetailResponse:
         risk_level=d.risk_level,
         issuer=d.issuer,
         remark=d.remark,
+        goods_or_service_name=d.goods_or_service_name,
         verify_status=d.verify_status,
         verified_at=_to_iso(d.verified_at),
         match_method=d.match_method,
@@ -400,8 +401,8 @@ async def upload_detail(
 
     try:
         wb = load_workbook(filename=io.BytesIO(content), read_only=True)
-
-        # 检查是否存在“发票基础信息”工作表
+    
+        # 检查是否存在"发票基础信息"工作表
         target_sheet = "发票基础信息"
         if target_sheet not in wb.sheetnames:
             wb.close()
@@ -409,9 +410,36 @@ async def upload_detail(
                 status_code=400,
                 detail=f"Excel文件中未找到'{target_sheet}'工作表，请上传符合要求的文件"
             )
-
+    
         ws = wb[target_sheet]
         rows = list(ws.iter_rows(values_only=True))
+    
+        # 额外解析"信息汇总表"工作表，构建数电发票号码 -> 货物或应税劳务名称 映射
+        goods_name_map: dict[str, list[str]] = {}
+        summary_sheet = "信息汇总表"
+        if summary_sheet in wb.sheetnames:
+            ws_sum = wb[summary_sheet]
+            sum_rows = list(ws_sum.iter_rows(values_only=True))
+            if sum_rows:
+                sum_header = sum_rows[0]
+                digital_no_col: Optional[int] = None
+                goods_name_col: Optional[int] = None
+                for idx, cell in enumerate(sum_header):
+                    if cell is not None:
+                        col_name = str(cell).strip()
+                        if col_name == "数电发票号码":
+                            digital_no_col = idx
+                        elif col_name == "货物或应税劳务名称":
+                            goods_name_col = idx
+                if digital_no_col is not None and goods_name_col is not None:
+                    for sum_row in sum_rows[1:]:
+                        if all(c is None or (isinstance(c, str) and not c.strip()) for c in sum_row):
+                            continue
+                        d_no = _cell_to_str(sum_row[digital_no_col] if digital_no_col < len(sum_row) else None)
+                        g_name = _cell_to_str(sum_row[goods_name_col] if goods_name_col < len(sum_row) else None)
+                        if d_no and g_name:
+                            goods_name_map.setdefault(d_no, []).append(g_name)
+    
         wb.close()
     except HTTPException:
         raise
@@ -502,6 +530,12 @@ async def upload_detail(
     for record in new_rows:
         kwargs = {"upload_batch_id": upload_log.id, "verify_status": "待核销"}
         kwargs.update(record)
+        # 从信息汇总表查找货物或应税劳务名称
+        d_no = record.get("digital_invoice_no")
+        if d_no and d_no in goods_name_map:
+            names = goods_name_map[d_no]
+            unique_names = list(dict.fromkeys(names))  # 保持顺序去重
+            kwargs["goods_or_service_name"] = "/".join(unique_names)
         details.append(InvoiceDetail(**kwargs))
 
     if details:

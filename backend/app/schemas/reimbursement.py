@@ -26,6 +26,7 @@ class InvoiceDetailResponse(BaseModel):
     risk_level: Optional[str] = None
     issuer: Optional[str] = None
     remark: Optional[str] = None
+    goods_or_service_name: Optional[str] = None
     verify_status: Optional[str] = None
     verified_at: Optional[str] = None
     match_method: Optional[str] = None

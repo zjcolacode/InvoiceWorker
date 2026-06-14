@@ -27,6 +27,7 @@ export interface InvoiceDetailItem {
   risk_level?: string | null
   issuer?: string | null
   remark?: string | null
+  goods_or_service_name?: string | null
   verify_status?: string | null
   verified_at?: string | null
   match_method?: string | null
