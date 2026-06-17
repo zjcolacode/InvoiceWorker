@@ -844,7 +844,13 @@ async def test_reimb_email_connection(
     try:
         password = decrypt_password(config.password_encrypted)
         if config.use_ssl:
-            mail = imaplib.IMAP4_SSL(config.imap_server, config.port)
+            import ssl
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            mail = imaplib.IMAP4_SSL(config.imap_server, config.port, ssl_context=ctx)
         else:
             mail = imaplib.IMAP4(config.imap_server, config.port)
         mail.login(config.email_address, password)
@@ -877,7 +883,13 @@ async def fetch_reimb_emails(
 
         # 建立IMAP连接
         if config.use_ssl:
-            mail = imaplib.IMAP4_SSL(config.imap_server, config.port)
+            import ssl
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            mail = imaplib.IMAP4_SSL(config.imap_server, config.port, ssl_context=ctx)
         else:
             mail = imaplib.IMAP4(config.imap_server, config.port)
         mail.login(config.email_address, password)
