@@ -31,6 +31,7 @@ SYSTEM_MENUS: List[dict] = [
     {"path": "/print", "title": "打印管理", "roles": None},
     {"path": "/users", "title": "用户管理", "roles": ["admin"]},
     {"path": "/categories", "title": "分类管理", "roles": ["admin", "operator"]},
+    {"path": "/reimbursement", "title": "报销单管理", "roles": None},
 ]
 
 
@@ -95,6 +96,8 @@ async def create_user(
         role=user_data.role,
         is_active=True,
         menu_permissions=menu_permissions_str,
+        full_name=user_data.full_name,
+        position=user_data.position,
     )
     db.add(new_user)
     db.commit()
@@ -162,6 +165,11 @@ async def update_user(
 
     if user_data.password is not None and user_data.password != "":
         user.password_hash = hash_password(user_data.password)
+
+    if user_data.full_name is not None:
+        user.full_name = user_data.full_name
+    if user_data.position is not None:
+        user.position = user_data.position
 
     db.commit()
     db.refresh(user)

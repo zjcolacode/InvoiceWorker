@@ -10,6 +10,8 @@ export interface UserInfo {
   is_active: boolean
   menu_permissions?: string[] | null
   created_at?: string | null
+  full_name?: string | null
+  position?: string | null
 }
 
 export interface LoginResponse {

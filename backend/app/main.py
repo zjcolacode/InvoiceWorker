@@ -2,8 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.database import engine, Base, SessionLocal
-from app.core.init_db import init_db
-from app.api import auth, users, recognition, email, invoices, categories, export, dashboard, workflow
+from app.core.init_db import init_db, _ensure_invoice_details_schema
+from app.api import auth, users, recognition, email, invoices, categories, export, dashboard, workflow, reimbursement
 from app.api import print as print_api
 # 确保所有模型被加载，使 Base.metadata 包含新增的 categories 表
 from app import models  # noqa: F401
@@ -41,11 +41,14 @@ app.include_router(categories.router, prefix="/api/categories", tags=["发票分
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["仪表盘"])
 app.include_router(workflow.router, prefix="/api/workflow", tags=["月度整理流程"])
 app.include_router(export.router, prefix="/api/export", tags=["数据导出"])
+app.include_router(reimbursement.router, prefix="/api/reimbursement", tags=["报销单管理"])
 
 
 @app.on_event("startup")
 async def startup():
     """应用启动时创建数据库表并初始化数据"""
+    # 在 create_all 之前，检测并删除旧版 invoice_details 表（SQLite 不支持 DROP COLUMN）
+    _ensure_invoice_details_schema()
     Base.metadata.create_all(bind=engine)
     init_db()
     # 初始化默认发票分类

@@ -48,3 +48,9 @@ Thumbs.db
 # Logs
 *.log
 backend/storage/email_temp/
+
+backend/storage/manual_match/
+backend/storage/reimb_email_temp/
+
+# 导出的 Excel 文件
+*.xlsx

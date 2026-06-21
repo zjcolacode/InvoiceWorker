@@ -63,6 +63,20 @@
           </template>
         </el-table-column>
 
+        <el-table-column prop="full_name" label="员工姓名" width="120">
+          <template #default="{ row }">
+            <span v-if="row.full_name">{{ row.full_name }}</span>
+            <span v-else class="placeholder">—</span>
+          </template>
+        </el-table-column>
+
+        <el-table-column prop="position" label="员工岗位" width="120">
+          <template #default="{ row }">
+            <span v-if="row.position">{{ row.position }}</span>
+            <span v-else class="placeholder">—</span>
+          </template>
+        </el-table-column>
+
         <el-table-column label="邮箱" min-width="220">
           <template #default="{ row }">
             <span v-if="row.email">{{ row.email }}</span>
@@ -195,6 +209,12 @@
             <el-radio-button label="viewer">观察者</el-radio-button>
           </el-radio-group>
         </el-form-item>
+        <el-form-item label="员工姓名">
+          <el-input v-model="form.full_name" placeholder="可选" maxlength="100" />
+        </el-form-item>
+        <el-form-item label="员工岗位">
+          <el-input v-model="form.position" placeholder="可选" maxlength="100" />
+        </el-form-item>
         <el-form-item label="邮箱" prop="email">
           <el-input v-model="form.email" placeholder="可选" maxlength="100" />
         </el-form-item>
@@ -316,6 +336,8 @@ interface UserForm {
   confirmPassword: string
   role: Role
   email: string
+  full_name: string
+  position: string
 }
 
 const form = reactive<UserForm>({
@@ -324,6 +346,8 @@ const form = reactive<UserForm>({
   confirmPassword: '',
   role: 'operator',
   email: '',
+  full_name: '',
+  position: '',
 })
 
 const formRules: FormRules = {
@@ -344,6 +368,8 @@ function resetForm() {
   form.confirmPassword = ''
   form.role = 'operator'
   form.email = ''
+  form.full_name = ''
+  form.position = ''
   editingId.value = null
   formRef.value?.clearValidate()
 }
@@ -359,6 +385,8 @@ function openEdit(row: UserInfo) {
   form.username = row.username
   form.role = row.role
   form.email = row.email || ''
+  form.full_name = row.full_name || ''
+  form.position = row.position || ''
   formDialogVisible.value = true
 }
 
@@ -380,6 +408,8 @@ async function handleSubmit() {
         username: form.username,
         role: form.role,
         email: form.email || null,
+        full_name: form.full_name || null,
+        position: form.position || null,
         ...(form.password ? { password: form.password } : {}),
       })
       ElMessage.success('已保存')
@@ -389,6 +419,8 @@ async function handleSubmit() {
         password: form.password,
         role: form.role,
         email: form.email || null,
+        full_name: form.full_name || null,
+        position: form.position || null,
       })
       ElMessage.success('用户创建成功')
     }

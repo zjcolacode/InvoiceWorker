@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Text, DateTime, ForeignKey
+from sqlalchemy import Boolean, Column, Integer, String, Float, Text, DateTime, ForeignKey
 from sqlalchemy.sql import func
 
 from app.core.database import Base
@@ -25,5 +25,7 @@ class Invoice(Base):
     file_hash = Column(String(64), nullable=True, index=True)  # SHA256哈希，用于去重
     recognized_at = Column(DateTime(timezone=True), nullable=True)
     status = Column(String(20), default="pending", nullable=False)  # pending, recognized, verified, error
+    is_reimbursed = Column(Boolean, default=False, nullable=False)
+    reimbursed_at = Column(DateTime(timezone=True), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

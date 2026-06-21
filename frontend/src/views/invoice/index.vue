@@ -138,13 +138,16 @@
             <span>{{ row.uploader_username || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="90" align="center">
+        <el-table-column prop="status" label="状态" width="120" align="center">
           <template #default="{ row }">
             <el-tag :type="statusType(row.status)" size="small">
               <el-icon v-if="row.status === 'recognizing'" class="is-loading" style="margin-right: 2px; vertical-align: middle">
                 <Loading />
               </el-icon>
               {{ statusText(row.status) }}
+            </el-tag>
+            <el-tag v-if="row.is_reimbursed" type="success" size="small" style="margin-left: 4px">
+              已核销
             </el-tag>
           </template>
         </el-table-column>

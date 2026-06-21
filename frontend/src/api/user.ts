@@ -19,6 +19,8 @@ export interface CreateUserPayload {
   role: Role
   email?: string | null
   menu_permissions?: string[] | null
+  full_name?: string | null
+  position?: string | null
 }
 
 export interface UpdateUserPayload {
@@ -27,6 +29,8 @@ export interface UpdateUserPayload {
   email?: string | null
   password?: string
   is_active?: boolean
+  full_name?: string | null
+  position?: string | null
 }
 
 export interface MenuItem {

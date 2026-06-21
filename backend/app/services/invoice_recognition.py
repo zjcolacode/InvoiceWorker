@@ -293,13 +293,14 @@ async def recognize_invoice(
     # 调用API（带重试）
     max_retries = 3
     retry_delay = 2
+    trust_env = settings.DASHSCOPE_TRUST_ENV
 
     for attempt in range(max_retries):
         try:
             logger.info(f"开始识别发票: {file_path} (第{attempt + 1}次尝试)")
 
             api_url = f"{settings.DASHSCOPE_BASE_URL.rstrip('/')}/chat/completions"
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=120.0, trust_env=trust_env) as client:
                 response = await client.post(
                     api_url,
                     headers={
@@ -313,10 +314,13 @@ async def recognize_invoice(
                 )
 
             if response.status_code != 200:
-                error_msg = f"API调用失败，状态码: {response.status_code}, 响应: {response.text[:200]}"
-                logger.warning(error_msg)
-                if attempt < max_retries - 1:
+                resp_body = response.text[:500]
+                error_msg = f"API调用失败，状态码: {response.status_code}, 响应: {resp_body[:200]}"
+                logger.warning(f"{error_msg} (第{attempt + 1}次尝试)")
+                # 5xx 错误可重试，4xx 不重试
+                if 500 <= response.status_code < 600 and attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
                     continue
                 return {"success": False, "data": None, "error": error_msg}
 
@@ -333,6 +337,27 @@ async def recognize_invoice(
 
             return {"success": True, "data": result, "error": None}
 
+        except httpx.ProxyError as e:
+            error_msg = (
+                "代理服务不可用（503），请检查系统代理（Clash/V2Ray等）是否正常运行，"
+                "或尝试关闭代理后重试"
+            )
+            logger.error(f"发票识别 - 代理错误（第{attempt + 1}次）: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+                continue
+            return {"success": False, "data": None, "error": error_msg}
+
+        except httpx.ConnectError as e:
+            error_msg = f"无法连接AI识别服务，请检查网络连接。错误详情：{e}"
+            logger.error(f"发票识别 - 连接错误（第{attempt + 1}次）: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+                continue
+            return {"success": False, "data": None, "error": error_msg}
+
         except json.JSONDecodeError as e:
             error_msg = f"JSON解析失败: {str(e)}"
             logger.error(f"{error_msg}, 原始内容: {content[:300] if 'content' in dir() else 'N/A'}")
@@ -346,6 +371,7 @@ async def recognize_invoice(
             logger.warning(error_msg)
             if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay)
+                retry_delay *= 2
                 continue
             return {"success": False, "data": None, "error": "API调用超时，已重试3次"}
 
@@ -354,6 +380,7 @@ async def recognize_invoice(
             logger.error(error_msg, exc_info=True)
             if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay)
+                retry_delay *= 2
                 continue
             return {"success": False, "data": None, "error": error_msg}
 

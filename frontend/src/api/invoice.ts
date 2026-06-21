@@ -16,6 +16,8 @@ export interface Invoice {
   original_filename?: string | null
   recognized_at?: string | null
   status: string
+  is_reimbursed?: boolean
+  reimbursed_at?: string | null
   user_id?: number | null
   /** 上传者用户名（仅 admin 查看列表时返回） */
   uploader_username?: string | null
