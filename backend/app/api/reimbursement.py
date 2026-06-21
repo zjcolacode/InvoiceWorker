@@ -377,6 +377,8 @@ def _detail_to_response(d: InvoiceDetail) -> InvoiceDetailResponse:
         verified_at=_to_iso(d.verified_at),
         match_method=d.match_method,
         reimburse_status=d.reimburse_status,
+        reimburse_person_name=d.reimburse_person_name,
+        reimburse_person_position=d.reimburse_person_position,
         created_at=_to_iso(d.created_at),
     )
 
@@ -649,6 +651,7 @@ async def list_details(
     invoice_source: Optional[str] = Query(None),
     invoice_type: Optional[str] = Query(None),
     verify_status: Optional[str] = Query(None),
+    digital_invoice_no: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     upload_batch_id: Optional[int] = Query(None),
@@ -672,6 +675,8 @@ async def list_details(
         query = query.filter(InvoiceDetail.invoice_source == invoice_source)
     if invoice_type:
         query = query.filter(InvoiceDetail.invoice_type == invoice_type)
+    if digital_invoice_no:
+        query = query.filter(InvoiceDetail.digital_invoice_no == digital_invoice_no)
     if verify_status:
         query = query.filter(InvoiceDetail.verify_status == verify_status)
     if upload_batch_id is not None:
@@ -692,6 +697,130 @@ async def list_details(
     items = [_detail_to_response(r) for r in records]
     return InvoiceDetailListResponse(
         total=total, page=page, page_size=page_size, items=items
+    )
+
+
+# ============================================================
+# 导出全量发票明细为 Excel
+# ============================================================
+@router.get("/details/export")
+async def export_details(
+    keyword: Optional[str] = Query(None),
+    invoice_source: Optional[str] = Query(None),
+    invoice_type: Optional[str] = Query(None),
+    verify_status: Optional[str] = Query(None),
+    digital_invoice_no: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    upload_batch_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """导出当前查询条件下的全量发票明细为 Excel 文件。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from urllib.parse import quote
+
+    query = db.query(InvoiceDetail)
+
+    if keyword:
+        kw = f"%{keyword}%"
+        query = query.filter(
+            or_(
+                InvoiceDetail.seller_name.like(kw),
+                InvoiceDetail.buyer_name.like(kw),
+            )
+        )
+    if invoice_source:
+        query = query.filter(InvoiceDetail.invoice_source == invoice_source)
+    if invoice_type:
+        query = query.filter(InvoiceDetail.invoice_type == invoice_type)
+    if digital_invoice_no:
+        query = query.filter(InvoiceDetail.digital_invoice_no == digital_invoice_no)
+    if verify_status:
+        query = query.filter(InvoiceDetail.verify_status == verify_status)
+    if upload_batch_id is not None:
+        query = query.filter(InvoiceDetail.upload_batch_id == upload_batch_id)
+    if start_date:
+        query = query.filter(InvoiceDetail.invoice_date >= start_date)
+    if end_date:
+        query = query.filter(InvoiceDetail.invoice_date <= end_date)
+
+    records = query.order_by(InvoiceDetail.created_at.desc()).all()
+
+    # 创建 Excel 工作簿
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "发票明细"
+
+    # 表头定义
+    headers = [
+        "数电发票号码", "发票号码", "开票日期", "销方名称", "购买方名称",
+        "货物或应税劳务名称", "金额", "税额", "价税合计", "发票来源",
+        "发票票种", "发票状态", "核销状态", "核销方式", "核销时间",
+        "报销状态", "报销人", "报销人岗位",
+    ]
+
+    # 写入表头
+    header_font = Font(bold=True, size=11)
+    header_fill = PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid")
+    header_align = Alignment(horizontal="center", vertical="center")
+    for col_idx, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+
+    # 写入数据行
+    for row_idx, d in enumerate(records, 2):
+        values = [
+            d.digital_invoice_no or d.invoice_no or "",
+            d.invoice_no or "",
+            d.invoice_date or "",
+            d.seller_name or "",
+            d.buyer_name or "",
+            d.goods_or_service_name or "",
+            d.amount or "",
+            d.tax_amount or "",
+            d.total_amount or "",
+            d.invoice_source or "",
+            d.invoice_type or "",
+            d.invoice_status or "",
+            d.verify_status or "",
+            d.match_method or "",
+            _to_iso(d.verified_at) or "",
+            d.reimburse_status or "",
+            d.reimburse_person_name or "",
+            d.reimburse_person_position or "",
+        ]
+        for col_idx, val in enumerate(values, 1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+
+    # 自动列宽（粗略估算）
+    col_widths = [22, 22, 14, 28, 28, 28, 12, 12, 14, 16, 16, 12, 12, 14, 20, 12, 12, 14]
+    for col_idx, width in enumerate(col_widths, 1):
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = width
+
+    # 冻结首行
+    ws.freeze_panes = "A2"
+
+    # 写入内存缓冲区
+    buf = io.BytesIO()
+    wb.save(buf)
+    wb.close()
+    buf.seek(0)
+
+    # 生成文件名
+    now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    raw_name = f"发票明细导出_{now_str}.xlsx"
+    encoded_name = quote(raw_name)
+    headers_resp = {
+        "Content-Disposition": f"attachment; filename=\"{encoded_name}\"; filename*=UTF-8''{encoded_name}",
+    }
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers_resp,
     )
 
 
@@ -1211,7 +1340,15 @@ def _extract_json_from_text(text: str) -> Optional[dict]:
 
 
 async def _recognize_digital_invoice_no(file_path: str) -> dict:
-    """调用视觉模型识别数电发票号码。返回 {success, invoice_no, raw, error}。"""
+    """调用视觉模型识别数电发票号码。返回 {success, invoice_no, raw, error}。
+
+    健壮性设计：
+    - trust_env=False 避免系统代理（Clash/V2Ray）导致 503
+    - 3 次重试 + 指数退避（2s/4s/8s）
+    - 区分 ProxyError / ConnectError / TimeoutException 返回友好提示
+    """
+    import asyncio as _asyncio
+
     api_key = settings.DASHSCOPE_API_KEY
     if not api_key or api_key == "your-dashscope-api-key":
         return {"success": False, "invoice_no": None, "raw": None, "error": "DASHSCOPE_API_KEY未配置"}
@@ -1243,41 +1380,97 @@ async def _recognize_digital_invoice_no(file_path: str) -> dict:
 
     prompt = "请识别这张发票图片中的数电发票号码（20位数字）。仅返回JSON格式：{\"digital_invoice_no\": \"号码\"}"
     api_url = f"{settings.DASHSCOPE_BASE_URL.rstrip('/')}/chat/completions"
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                api_url,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": settings.VISION_MODEL,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_base64}"}},
-                                {"type": "text", "text": prompt},
-                            ],
-                        }
-                    ],
-                },
+    trust_env = settings.DASHSCOPE_TRUST_ENV
+
+    max_retries = 3
+    retry_delay = 2  # 秒，指数退避基数
+    last_error = ""
+
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"手工匹配 - 视觉识别第{attempt + 1}/{max_retries}次尝试: {file_path}")
+            async with httpx.AsyncClient(timeout=120.0, trust_env=trust_env) as client:
+                response = await client.post(
+                    api_url,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": settings.VISION_MODEL,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_base64}"}},
+                                    {"type": "text", "text": prompt},
+                                ],
+                            }
+                        ],
+                    },
+                )
+            if response.status_code != 200:
+                resp_body = response.text[:500]
+                logger.warning(
+                    f"手工匹配 - 视觉模型返回非200: status={response.status_code}, "
+                    f"attempt={attempt + 1}, body={resp_body}"
+                )
+                last_error = f"视觉模型调用失败（状态码 {response.status_code}），响应：{resp_body[:200]}"
+                # 5xx 错误可重试
+                if 500 <= response.status_code < 600 and attempt < max_retries - 1:
+                    await _asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                    continue
+                return {"success": False, "invoice_no": None, "raw": None, "error": last_error}
+
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            logger.info(f"手工匹配 - 视觉识别成功: {file_path}")
+            break  # 成功则跳出重试循环
+
+        except httpx.ProxyError as e:
+            logger.error(f"手工匹配 - 代理错误（第{attempt + 1}次）: {e}")
+            last_error = (
+                "代理服务不可用（503），请检查系统代理（Clash/V2Ray等）是否正常运行，"
+                "或尝试关闭代理后重试"
             )
-        if response.status_code != 200:
-            return {
-                "success": False,
-                "invoice_no": None,
-                "raw": None,
-                "error": f"视觉模型调用失败，状态码：{response.status_code}, 响应：{response.text[:200]}",
-            }
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-    except httpx.TimeoutException:
-        return {"success": False, "invoice_no": None, "raw": None, "error": "视觉模型调用超时"}
-    except Exception as e:
-        logger.error(f"手工匹配 - 识别调用异常: {e}", exc_info=True)
-        return {"success": False, "invoice_no": None, "raw": None, "error": f"识别调用异常: {e}"}
+            if attempt < max_retries - 1:
+                await _asyncio.sleep(retry_delay)
+                retry_delay *= 2
+                continue
+            return {"success": False, "invoice_no": None, "raw": None, "error": last_error}
+
+        except httpx.ConnectError as e:
+            logger.error(f"手工匹配 - 连接错误（第{attempt + 1}次）: {e}")
+            last_error = (
+                f"无法连接视觉模型服务，请检查网络连接。错误详情：{e}"
+            )
+            if attempt < max_retries - 1:
+                await _asyncio.sleep(retry_delay)
+                retry_delay *= 2
+                continue
+            return {"success": False, "invoice_no": None, "raw": None, "error": last_error}
+
+        except httpx.TimeoutException:
+            logger.warning(f"手工匹配 - 请求超时（第{attempt + 1}次）")
+            last_error = "视觉模型调用超时，请稍后重试"
+            if attempt < max_retries - 1:
+                await _asyncio.sleep(retry_delay)
+                retry_delay *= 2
+                continue
+            return {"success": False, "invoice_no": None, "raw": None, "error": last_error}
+
+        except Exception as e:
+            logger.error(f"手工匹配 - 识别调用异常（第{attempt + 1}次）: {e}", exc_info=True)
+            last_error = f"识别调用异常: {e}"
+            if attempt < max_retries - 1:
+                await _asyncio.sleep(retry_delay)
+                retry_delay *= 2
+                continue
+            return {"success": False, "invoice_no": None, "raw": None, "error": last_error}
+    else:
+        # 所有重试均失败
+        return {"success": False, "invoice_no": None, "raw": None, "error": last_error}
 
     parsed = _extract_json_from_text(content)
     if not parsed or not isinstance(parsed, dict):
@@ -1488,6 +1681,8 @@ async def create_reimburse_application(
     # 更新发票的报销状态
     for inv in invoices:
         inv.reimburse_status = "已报销"
+        inv.reimburse_person_name = application.applicant_name
+        inv.reimburse_person_position = application.applicant_position
 
     db.commit()
     db.refresh(application)

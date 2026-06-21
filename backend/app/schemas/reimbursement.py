@@ -31,6 +31,8 @@ class InvoiceDetailResponse(BaseModel):
     verified_at: Optional[str] = None
     match_method: Optional[str] = None
     reimburse_status: Optional[str] = None
+    reimburse_person_name: Optional[str] = None
+    reimburse_person_position: Optional[str] = None
     created_at: Optional[str] = None
 
     class Config:

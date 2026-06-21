@@ -24,19 +24,14 @@
         </div>
         <div class="toolbar-filters">
           <el-input v-model="filters.keyword" placeholder="搜索销方/购方名称" clearable style="width: 220px" @clear="handleSearch" @keyup.enter="handleSearch" />
-          <el-select v-model="filters.invoice_source" placeholder="发票来源" clearable style="width: 180px" @change="handleSearch">
-            <el-option v-for="opt in invoiceSourceOptions" :key="opt" :label="opt" :value="opt" />
-          </el-select>
-          <el-select v-model="filters.invoice_type" placeholder="发票票种" clearable style="width: 180px" @change="handleSearch">
-            <el-option v-for="opt in invoiceTypeOptions" :key="opt" :label="opt" :value="opt" />
-          </el-select>
+          <el-input v-model="filters.digital_invoice_no" placeholder="数电发票号码" clearable style="width: 200px" @clear="handleSearch" @keyup.enter="handleSearch" />
           <el-select v-model="filters.verify_status" placeholder="核销状态" clearable style="width: 130px" @change="handleSearch">
-            <el-option label="待核销" value="待核销" />
             <el-option label="已核销" value="已核销" />
             <el-option label="未匹配" value="未匹配" />
           </el-select>
           <el-date-picker v-model="dateRange" type="daterange" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" value-format="YYYY-MM-DD" style="width: 260px" @change="handleDateChange" />
           <el-button type="primary" @click="handleSearch"><el-icon><Search /></el-icon> 搜索</el-button>
+          <el-button type="success" :loading="exporting" @click="handleExport"><el-icon><Download /></el-icon> 导出</el-button>
         </div>
       </el-card>
 
@@ -80,6 +75,18 @@
           <el-table-column prop="match_method" label="核销方式" width="110" align="center">
             <template #default="{ row }">
               <span v-if="row.match_method">{{ row.match_method }}</span>
+              <span v-else style="color: #999">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="reimburse_person_name" label="报销人" width="100" align="center">
+            <template #default="{ row }">
+              <span v-if="row.reimburse_person_name">{{ row.reimburse_person_name }}</span>
+              <span v-else style="color: #999">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="reimburse_person_position" label="报销人岗位" width="110" align="center">
+            <template #default="{ row }">
+              <span v-if="row.reimburse_person_position">{{ row.reimburse_person_position }}</span>
               <span v-else style="color: #999">-</span>
             </template>
           </el-table-column>
@@ -258,6 +265,18 @@
             <template #default="{ row }">
               <el-tag v-if="row.match_method" :type="row.match_method === '邮箱匹配' ? 'primary' : 'success'" size="small">{{ row.match_method }}</el-tag>
               <span v-else style="color:#999">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="reimburse_person_name" label="报销人" width="100" align="center">
+            <template #default="{ row }">
+              <span v-if="row.reimburse_person_name">{{ row.reimburse_person_name }}</span>
+              <span v-else style="color: #999">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="reimburse_person_position" label="报销人岗位" width="110" align="center">
+            <template #default="{ row }">
+              <span v-if="row.reimburse_person_position">{{ row.reimburse_person_position }}</span>
+              <span v-else style="color: #999">-</span>
             </template>
           </el-table-column>
           <el-table-column prop="verified_at" label="核销时间" width="170">
@@ -677,9 +696,10 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules, UploadFile, UploadInstance, UploadUserFile } from 'element-plus'
-import { ArrowDown, Check, Message, Plus, Refresh, Search, Upload, UploadFilled } from '@element-plus/icons-vue'
+import { ArrowDown, Check, Download, Message, Plus, Refresh, Search, Upload, UploadFilled } from '@element-plus/icons-vue'
 import {
   getInvoiceDetails,
+  exportInvoiceDetails,
   getReimbursementRecords,
   getUploadLogs,
   uploadInvoiceDetail,
@@ -734,12 +754,10 @@ const activeStep = ref(0)
 // ============================================================
 // 查询条件 & 分页（步骤1）
 // ============================================================
-const filters = reactive({ keyword: '', invoice_source: '', invoice_type: '', verify_status: '', start_date: '', end_date: '' })
+const filters = reactive({ keyword: '', digital_invoice_no: '', verify_status: '', start_date: '', end_date: '' })
 const dateRange = ref<string[]>([])
 const pagination = reactive({ page: 1, pageSize: 20, total: 0 })
-
-const invoiceSourceOptions = ['电子发票服务平台', '增值税发票管理系统', '税控盘开票', '税务UKey开票', '其他']
-const invoiceTypeOptions = ['增值税专用发票', '增值税普通发票', '电子专用发票', '电子普通发票', '数电专票', '数电普票', '通行费电子发票']
+const exporting = ref(false)
 
 // ============================================================
 // 表格数据
@@ -752,8 +770,7 @@ async function loadData() {
   try {
     const res = await getInvoiceDetails({
       keyword: filters.keyword || undefined,
-      invoice_source: filters.invoice_source || undefined,
-      invoice_type: filters.invoice_type || undefined,
+      digital_invoice_no: filters.digital_invoice_no || undefined,
       verify_status: filters.verify_status || undefined,
       start_date: filters.start_date || undefined,
       end_date: filters.end_date || undefined,
@@ -763,6 +780,35 @@ async function loadData() {
     tableData.value = res.items
     pagination.total = res.total
   } catch (e) { console.error(e) } finally { loading.value = false }
+}
+
+async function handleExport() {
+  exporting.value = true
+  try {
+    const res = await exportInvoiceDetails({
+      keyword: filters.keyword || undefined,
+      digital_invoice_no: filters.digital_invoice_no || undefined,
+      verify_status: filters.verify_status || undefined,
+      start_date: filters.start_date || undefined,
+      end_date: filters.end_date || undefined,
+    })
+    const blob = new Blob([res as any], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    const now = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    link.download = `发票明细导出_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.xlsx`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  } catch (e: any) {
+    ElMessage.error(e?.message || '导出失败，请重试')
+  } finally {
+    exporting.value = false
+  }
 }
 
 function handleSearch() { pagination.page = 1; loadData() }
@@ -1423,7 +1469,9 @@ watch(
 )
 
 watch(activeStep, (newStep) => {
-  if (newStep === 2) {
+  if (newStep === 0) {
+    loadData()
+  } else if (newStep === 2) {
     loadUnmatchedInvoices()
   } else if (newStep === 3) {
     loadMatchedInvoices()

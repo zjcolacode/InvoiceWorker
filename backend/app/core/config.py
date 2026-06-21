@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     DASHSCOPE_API_KEY: Optional[str] = None
     DASHSCOPE_BASE_URL: str = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
     VISION_MODEL: str = "qwen3.6-plus"
+    # 是否信任系统代理环境变量（Clash/V2Ray等代理可能导致503，默认关闭）
+    DASHSCOPE_TRUST_ENV: bool = False
 
     # 文件存储路径
     PDF_STORAGE_PATH: str = "./storage/pdf_invoices"

@@ -155,6 +155,47 @@ def _ensure_invoice_detail_reimburse_status_column() -> None:
         logger.warning(f"检查/补充 invoice_details.reimburse_status 列失败（可忽略）: {e}")
 
 
+def _ensure_invoice_detail_reimburse_person_columns() -> None:
+    """为已有 invoice_details 表补充 reimburse_person_name 和 reimburse_person_position 列。"""
+    try:
+        with engine.connect() as conn:
+            dialect = engine.dialect.name
+            if dialect == "sqlite":
+                rows = conn.execute(text("PRAGMA table_info(invoice_details)")).fetchall()
+                if not rows:
+                    return
+                columns = {row[1] for row in rows}
+                if "reimburse_person_name" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE invoice_details ADD COLUMN reimburse_person_name VARCHAR(100)"
+                    ))
+                    conn.commit()
+                    logger.info("已为 invoice_details 表补充 reimburse_person_name 列")
+                if "reimburse_person_position" not in columns:
+                    conn.execute(text(
+                        "ALTER TABLE invoice_details ADD COLUMN reimburse_person_position VARCHAR(100)"
+                    ))
+                    conn.commit()
+                    logger.info("已为 invoice_details 表补充 reimburse_person_position 列")
+            else:
+                try:
+                    conn.execute(text(
+                        "ALTER TABLE invoice_details ADD COLUMN reimburse_person_name VARCHAR(100)"
+                    ))
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text(
+                        "ALTER TABLE invoice_details ADD COLUMN reimburse_person_position VARCHAR(100)"
+                    ))
+                    conn.commit()
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"检查/补充 invoice_details 报销人列失败（可忽略）: {e}")
+
+
 def _deduplicate_email_messages() -> None:
     """清理 email_messages 表中的重复数据
 
@@ -233,6 +274,7 @@ def init_db() -> None:
     _ensure_email_messages_uid_column()
     _ensure_invoice_reimbursement_columns()
     _ensure_invoice_detail_reimburse_status_column()
+    _ensure_invoice_detail_reimburse_person_columns()
     _deduplicate_email_messages()
     db: Session = SessionLocal()
     try:

@@ -47,4 +47,6 @@ class InvoiceDetail(Base):
     verified_at = Column(DateTime, nullable=True)           # 核销时间
     match_method = Column(String(20), nullable=True)        # 邮箱匹配 / 手工匹配
     reimburse_status = Column(String(20), default="待报销")  # 报销状态：待报销/已报销
+    reimburse_person_name = Column(String(100), nullable=True)      # 报销人名称
+    reimburse_person_position = Column(String(100), nullable=True)   # 报销人岗位
     created_at = Column(DateTime, server_default=func.now())

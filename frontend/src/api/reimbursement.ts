@@ -32,6 +32,8 @@ export interface InvoiceDetailItem {
   verified_at?: string | null
   match_method?: string | null
   reimburse_status?: string | null
+  reimburse_person_name?: string | null
+  reimburse_person_position?: string | null
   created_at?: string | null
 }
 
@@ -77,6 +79,7 @@ export interface DetailQueryParams {
   invoice_source?: string
   invoice_type?: string
   verify_status?: string
+  digital_invoice_no?: string
   start_date?: string
   end_date?: string
   upload_batch_id?: number
@@ -124,6 +127,7 @@ export function getInvoiceDetails(params: DetailQueryParams) {
     invoice_source: params.invoice_source || undefined,
     invoice_type: params.invoice_type || undefined,
     verify_status: params.verify_status || undefined,
+    digital_invoice_no: params.digital_invoice_no || undefined,
     start_date: params.start_date || undefined,
     end_date: params.end_date || undefined,
     upload_batch_id: params.upload_batch_id ?? undefined,
@@ -134,6 +138,27 @@ export function getInvoiceDetails(params: DetailQueryParams) {
     '/api/reimbursement/details',
     { params: query },
   )
+}
+
+/**
+ * 导出当前查询条件下的全量发票明细为 Excel
+ */
+export function exportInvoiceDetails(params: DetailQueryParams) {
+  const query: Record<string, string | number | undefined> = {
+    keyword: params.keyword || undefined,
+    invoice_source: params.invoice_source || undefined,
+    invoice_type: params.invoice_type || undefined,
+    verify_status: params.verify_status || undefined,
+    digital_invoice_no: params.digital_invoice_no || undefined,
+    start_date: params.start_date || undefined,
+    end_date: params.end_date || undefined,
+    upload_batch_id: params.upload_batch_id ?? undefined,
+  }
+  return request.get('/api/reimbursement/details/export', {
+    params: query,
+    responseType: 'blob',
+    timeout: 120000,
+  })
 }
 
 /**
